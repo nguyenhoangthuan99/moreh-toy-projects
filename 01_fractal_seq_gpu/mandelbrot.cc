@@ -16,6 +16,7 @@
   } while (0)
 #define COUNT_MAX 5000
 #define BLOCK_SIZE 16
+#define TILE_SIZE 1
 #define MIN(x, y) ((x) < (y) ? (x) : (y))
 
 #ifdef SAVE_JPG
@@ -96,46 +97,52 @@ __global__ void gpu_mandelbrot(int *r, int *g, int *b, int m, int n)
 
   i = blockIdx.x * blockDim.x + threadIdx.x;
   j = blockIdx.y * blockDim.y + threadIdx.y;
-  if (i >= m || j >= n)
-    return;
-  x = ((float)(j - 1) * x_max + (float)(m - j) * x_min) / (float)(m - 1);
-
-  y = ((float)(i - 1) * y_max + (float)(n - i) * y_min) / (float)(n - 1);
-
-  int count = 0;
-
-  x1 = x;
-  y1 = y;
-
-  for (k = 1; k <= count_max; k++)
-  {
-    x2 = x1 * x1 - y1 * y1 + x;
-    y2 = 2.0 * x1 * y1 + y;
-
-    if (x2 < -2.0 || 2.0 < x2 || y2 < -2.0 || 2.0 < y2)
+  // if (i >= m || j >= n)
+  //   return;
+  for (int tile_j = 0; tile_j < TILE_SIZE; tile_j++)
+    for (int tile_i = 0; tile_i < TILE_SIZE; tile_i++)
     {
-      count = k;
-      break;
-    }
-    x1 = x2;
-    y1 = y2;
-  }
-  int indx = i * n + j;
+      if (TILE_SIZE * i + tile_i >= m || TILE_SIZE * j + tile_j >= n)
+        continue;
+      x = ((float)(TILE_SIZE * j + tile_j - 1) * x_max + (float)(m - TILE_SIZE * j - tile_j) * x_min) / (float)(m - 1);
 
-  if ((count % 2) == 1)
-  {
-    r[indx] = 255;
-    g[indx] = 255;
-    b[indx] = 255;
-  }
-  else
-  {
-    c = (int)(255.0 * sqrtf(sqrtf(sqrtf(
-                          ((float)(count) / (float)(count_max))))));
-    r[indx] = 3 * c / 5;
-    g[indx] = 3 * c / 5;
-    b[indx] = c;
-  }
+      y = ((float)(TILE_SIZE * i + tile_i - 1) * y_max + (float)(n - TILE_SIZE * i - tile_i) * y_min) / (float)(n - 1);
+
+      int count = 0;
+
+      x1 = x;
+      y1 = y;
+
+      for (k = 1; k <= count_max; k++)
+      {
+        x2 = x1 * x1 - y1 * y1 + x;
+        y2 = 2.0 * x1 * y1 + y;
+
+        if (x2 < -2.0 || 2.0 < x2 || y2 < -2.0 || 2.0 < y2)
+        {
+          count = k;
+          break;
+        }
+        x1 = x2;
+        y1 = y2;
+      }
+      int indx = (TILE_SIZE * i + tile_i) * n + TILE_SIZE * j + tile_j;
+
+      if ((count % 2) == 1)
+      {
+        r[indx] = 255;
+        g[indx] = 255;
+        b[indx] = 255;
+      }
+      else
+      {
+        c = (int)(255.0 * sqrtf(sqrtf(sqrtf(
+                              ((float)(count) / (float)(count_max))))));
+        r[indx] = 3 * c / 5;
+        g[indx] = 3 * c / 5;
+        b[indx] = c;
+      }
+    }
 }
 
 void mandelbrot(int m, int n, char *output_filename)
@@ -201,7 +208,7 @@ void mandelbrot(int m, int n, char *output_filename)
   // int *b = b_cpu;
 
   dim3 blockdim(BLOCK_SIZE, BLOCK_SIZE);
-  dim3 griddim((m + blockdim.x - 1) / blockdim.x, (n + blockdim.y - 1) / blockdim.y);
+  dim3 griddim(((m + TILE_SIZE - 1) / TILE_SIZE + blockdim.x - 1) / blockdim.x, ((n + TILE_SIZE - 1) / TILE_SIZE + blockdim.y - 1) / blockdim.y);
 
   gpu_mandelbrot<<<griddim, blockdim>>>(r_gpu, g_gpu, b_gpu, m, n);
   // CHECK_HIP(hipDeviceSynchronize());
