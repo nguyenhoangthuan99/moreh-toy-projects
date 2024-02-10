@@ -31,7 +31,7 @@ typedef struct
 
 // RgbColor HSVtoRGB(unsigned h, unsigned s, unsigned v);
 
-__global__ void gpu_julia(int *r, int *g, int *b, int w, int h)
+__global__ void gpu_julia(int *r, int *g, int *b, int w, int h, int h_work_size, int h_offset)
 {
   double cRe, cIm;
 
@@ -47,10 +47,10 @@ __global__ void gpu_julia(int *r, int *g, int *b, int w, int h)
   // after how much iterations the functi
   int x = blockIdx.x * blockDim.x + threadIdx.x;
   int y = blockIdx.y * blockDim.y + threadIdx.y;
-  if (x >= w || y >= h)
+  if (x >= w || y >= h_work_size)
     return;
   newRe = 1.5 * (x - w / 2) / (0.5 * zoom * w) + moveX;
-  newIm = (y - h / 2) / (0.5 * zoom * h) + moveY;
+  newIm = (h_offset+y - h / 2) / (0.5 * zoom * h) + moveY;
 
   // i will represent the number of iterations
   int i;
@@ -144,7 +144,7 @@ void run_with_1_gpu_julia(int *r, int *g, int *b, int w, int h)
   dim3 blockdim(BLOCK_SIZE, BLOCK_SIZE);
   dim3 griddim((w + blockdim.x - 1) / blockdim.x, (h + blockdim.y - 1) / blockdim.y);
 
-  gpu_julia<<<griddim, blockdim>>>(r_gpu, g_gpu, b_gpu, w, h);
+  gpu_julia<<<griddim, blockdim>>>(r_gpu, g_gpu, b_gpu, w, h,h,0);
   // CHECK_HIP(hipDeviceSynchronize());
 
   CHECK_HIP(hipMemcpyAsync(r, r_gpu, w * h * sizeof(int), hipMemcpyDeviceToHost, streams[0]));
@@ -163,6 +163,90 @@ void run_with_1_gpu_julia(int *r, int *g, int *b, int w, int h)
   CHECK_HIP(hipFree((void *)r_gpu));
   CHECK_HIP(hipFree((void *)g_gpu));
   CHECK_HIP(hipFree((void *)b_gpu));
+}
+
+void run_with_multi_gpu_julia(int *r, int *g, int *b, int w, int h)
+{
+  int ngpu;
+
+  CHECK_HIP(hipGetDeviceCount(&ngpu));
+  printf("num GPUs: %d\n",ngpu);
+  int hbegin[1024], hend[1024];
+  for (int i = 0; i <= ngpu; i++)
+  {
+    hbegin[i] = h / ngpu * i + std::min(i, h % ngpu);
+    // printf("%d %d %d\n",h / ngpu * i,std::min(i, h % ngpu),hbegin[i] );
+    hend[i] = h / ngpu * (i + 1) + std::min(i + 1, h % ngpu);
+    if (i == ngpu - 1)
+      hend[i] = h;
+  }
+
+  int *r_gpu[1024], *g_gpu[1024], *b_gpu[1024];
+  double wtime;
+  printf("Start hip Malloc\n");
+  for (int i = 0; i < ngpu; i++)
+  {
+    CHECK_HIP(hipSetDevice(i));
+    printf("GPU [%d] h size : %d | hbegin : %d | hend : %d\n",i,(hend[i] - hbegin[i]),hbegin[i],hend[i]);
+    CHECK_HIP(hipMalloc((void **)&r_gpu[i], w * (hend[i] - hbegin[i]) * sizeof(int)));
+    CHECK_HIP(hipMalloc((void **)&g_gpu[i], w * (hend[i] - hbegin[i]) * sizeof(int)));
+    CHECK_HIP(hipMalloc((void **)&b_gpu[i], w * (hend[i] - hbegin[i]) * sizeof(int)));
+  }
+
+  printf("Done hip Malloc\n");
+  hipStream_t streams[ngpu][3];
+
+  for (int gpu_id = 0; gpu_id < ngpu; gpu_id ++)
+  {
+    CHECK_HIP(hipSetDevice(gpu_id));
+    for (int i = 0; i < 3; i++)
+    {
+      CHECK_HIP(hipStreamCreate(&streams[gpu_id][i]));
+    }
+  }
+
+  timer_init();
+  timer_start(0);
+
+  // loop through every pixel
+  for (int i = 0; i < ngpu; i++)
+  {
+    CHECK_HIP(hipSetDevice(i));
+    dim3 blockdim(BLOCK_SIZE, BLOCK_SIZE);
+    dim3 griddim((w + blockdim.x - 1) / blockdim.x, ((hend[i] - hbegin[i]) + blockdim.y - 1) / blockdim.y);
+
+    gpu_julia<<<griddim, blockdim>>>(r_gpu[i], g_gpu[i], b_gpu[i], w, h,(hend[i] - hbegin[i]),hbegin[i]);
+  }
+
+  // CHECK_HIP(hipDeviceSynchronize());
+  for (int i = 0; i < ngpu; i++)
+  {
+    CHECK_HIP(hipSetDevice(i));
+    CHECK_HIP(hipMemcpyAsync(&r[hbegin[i] * w], r_gpu[i], w * (hend[i] - hbegin[i]) * sizeof(int), hipMemcpyDeviceToHost, streams[i][0]));
+    CHECK_HIP(hipMemcpyAsync(&g[hbegin[i] * w], g_gpu[i], w * (hend[i] - hbegin[i]) * sizeof(int), hipMemcpyDeviceToHost, streams[i][1]));
+    CHECK_HIP(hipMemcpyAsync(&b[hbegin[i] * w], b_gpu[i], w * (hend[i] - hbegin[i]) * sizeof(int), hipMemcpyDeviceToHost, streams[i][2]));
+  }
+
+  // CHECK_HIP(hipStreamSynchronize(streams[0]));
+  // CHECK_HIP(hipStreamSynchronize(streams[1]));
+  // CHECK_HIP(hipStreamSynchronize(streams[2]));
+  for (int i = 0; i < ngpu; i++)
+  {
+    CHECK_HIP(hipSetDevice(i));
+    CHECK_HIP(hipDeviceSynchronize());
+  }
+
+  timer_stop(0);
+  wtime = timer_read(0);
+  printf("\n");
+  printf("  Time = %lf seconds.\n", wtime);
+  for (int i = 0; i < ngpu; i++)
+  {
+    CHECK_HIP(hipSetDevice(i));
+    CHECK_HIP(hipFree((void *)r_gpu[i]));
+    CHECK_HIP(hipFree((void *)g_gpu[i]));
+    CHECK_HIP(hipFree((void *)b_gpu[i]));
+  }
 }
 
 // Main part of the below code is originated from Lode Vandevenne's code.
@@ -213,7 +297,9 @@ void julia(int w, int h, char *output_filename)
   printf("  An image of the set is created using\n");
   printf("    W = %d pixels in the X direction and\n", w);
   printf("    H = %d pixels in the Y direction.\n", h);
-  run_with_1_gpu_julia(r,g,b,w,h);
+  // run_with_1_gpu_julia(r, g, b, w, h);
+
+  run_with_multi_gpu_julia(r, g, b, w, h);
 
 #ifdef SAVE_JPG
   save_jpeg_image(output_filename, r, g, b, w, h);
