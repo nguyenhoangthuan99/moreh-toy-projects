@@ -121,66 +121,21 @@ __global__ void gpu_julia(int *r, int *g, int *b, int w, int h)
   }
 }
 
-// Main part of the below code is originated from Lode Vandevenne's code.
-// Please refer to http://lodev.org/cgtutor/juliamandelbrot.html
-void julia(int w, int h, char *output_filename)
+void run_with_1_gpu_julia(int *r, int *g, int *b, int w, int h)
 {
-  // each iteration, it calculates: new = old*old + c,
-  // where c is a constant and old starts at current pixel
-
-  // real and imaginary part of the constant c
-  // determinate shape of the Julia Set
-  // double cRe, cIm;
-
-  // real and imaginary parts of new and old
-  // double newRe, newIm, oldRe, oldIm;
-
-  // you can change these to zoom and change position
-  // double zoom = 1, moveX = 0, moveY = 0;
-
-  // after how much iterations the function should stop
-  // int maxIterations = COUNT_MAX;
-
-#ifndef SAVE_JPG
-  FILE *output_unit;
-#endif
-
+  int *r_gpu, *g_gpu, *b_gpu;
   double wtime;
-
-  // pick some values for the constant c
-  // this determines the shape of the Julia Set
-  // cRe = -0.7;
-  // cIm = 0.27015;
-
-  // int *r = (int *)calloc(w * h, sizeof(int));
-  // int *g = (int *)calloc(w * h, sizeof(int));
-  // int *b = (int *)calloc(w * h, sizeof(int));
-
-  int *r_gpu, *g_gpu, *b_gpu, *r, *g, *b;
   printf("Start hip Malloc\n");
   CHECK_HIP(hipMalloc((void **)&r_gpu, w * h * sizeof(int)));
   CHECK_HIP(hipMalloc((void **)&g_gpu, w * h * sizeof(int)));
   CHECK_HIP(hipMalloc((void **)&b_gpu, w * h * sizeof(int)));
   printf("Done hip Malloc\n");
-
-  CHECK_HIP(hipHostMalloc((void **)&r, w * h * sizeof(int)));
-  CHECK_HIP(hipHostMalloc((void **)&g, w * h * sizeof(int)));
-  CHECK_HIP(hipHostMalloc((void **)&b, w * h * sizeof(int)));
-
   hipStream_t streams[3];
 
   for (int i = 0; i < 3; i++)
   {
-   CHECK_HIP( hipStreamCreate(&streams[i]));
+    CHECK_HIP(hipStreamCreate(&streams[i]));
   }
-
-  printf("  Sequential C version\n");
-  printf("\n");
-  printf("  Create an ASCII PPM image of the Julia set.\n");
-  printf("\n");
-  printf("  An image of the set is created using\n");
-  printf("    W = %d pixels in the X direction and\n", w);
-  printf("    H = %d pixels in the Y direction.\n", h);
 
   timer_init();
   timer_start(0);
@@ -205,6 +160,60 @@ void julia(int w, int h, char *output_filename)
   wtime = timer_read(0);
   printf("\n");
   printf("  Time = %lf seconds.\n", wtime);
+  CHECK_HIP(hipFree((void *)r_gpu));
+  CHECK_HIP(hipFree((void *)g_gpu));
+  CHECK_HIP(hipFree((void *)b_gpu));
+}
+
+// Main part of the below code is originated from Lode Vandevenne's code.
+// Please refer to http://lodev.org/cgtutor/juliamandelbrot.html
+void julia(int w, int h, char *output_filename)
+{
+  // each iteration, it calculates: new = old*old + c,
+  // where c is a constant and old starts at current pixel
+
+  // real and imaginary part of the constant c
+  // determinate shape of the Julia Set
+  // double cRe, cIm;
+
+  // real and imaginary parts of new and old
+  // double newRe, newIm, oldRe, oldIm;
+
+  // you can change these to zoom and change position
+  // double zoom = 1, moveX = 0, moveY = 0;
+
+  // after how much iterations the function should stop
+  // int maxIterations = COUNT_MAX;
+
+#ifndef SAVE_JPG
+  FILE *output_unit;
+#endif
+
+  // double wtime;
+
+  // pick some values for the constant c
+  // this determines the shape of the Julia Set
+  // cRe = -0.7;
+  // cIm = 0.27015;
+
+  // int *r = (int *)calloc(w * h, sizeof(int));
+  // int *g = (int *)calloc(w * h, sizeof(int));
+  // int *b = (int *)calloc(w * h, sizeof(int));
+
+  int *r, *g, *b;
+
+  CHECK_HIP(hipHostMalloc((void **)&r, w * h * sizeof(int)));
+  CHECK_HIP(hipHostMalloc((void **)&g, w * h * sizeof(int)));
+  CHECK_HIP(hipHostMalloc((void **)&b, w * h * sizeof(int)));
+
+  printf("  Sequential C version\n");
+  printf("\n");
+  printf("  Create an ASCII PPM image of the Julia set.\n");
+  printf("\n");
+  printf("  An image of the set is created using\n");
+  printf("    W = %d pixels in the X direction and\n", w);
+  printf("    H = %d pixels in the Y direction.\n", h);
+  run_with_1_gpu_julia(r,g,b,w,h);
 
 #ifdef SAVE_JPG
   save_jpeg_image(output_filename, r, g, b, w, h);
@@ -237,9 +246,6 @@ void julia(int w, int h, char *output_filename)
   CHECK_HIP(hipFree(r));
   CHECK_HIP(hipFree(g));
   CHECK_HIP(hipFree(b));
-  CHECK_HIP(hipFree((void *)r_gpu));
-  CHECK_HIP(hipFree((void *)g_gpu));
-  CHECK_HIP(hipFree((void *)b_gpu));
 }
 
 // RgbColor HSVtoRGB(unsigned h, unsigned s, unsigned v)

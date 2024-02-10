@@ -138,6 +138,10 @@ void run_with_1_gpu(int *r, int *g, int *b, int m, int n)
   CHECK_HIP(hipFree(b_gpu));
 }
 
+void run_with_multi_gpu_mandelbrot(int *r, int *g, int *b, int m, int n){
+
+}
+
 void mandelbrot(int m, int n, char *output_filename)
 {
   // int c;
@@ -177,7 +181,7 @@ void mandelbrot(int m, int n, char *output_filename)
   printf("    M = %d pixels in the X direction and\n", m);
   printf("    N = %d pixels in the Y direction.\n", n);
 
-  run_with_1_gpu(r, g, b, m, n);
+  run_with_multi_gpu_mandelbrot(r, g, b, m, n);
 
 #ifdef SAVE_JPG
   // Write data to an JPEG file.
