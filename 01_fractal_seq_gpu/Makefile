@@ -3,7 +3,7 @@ HIPCC=$(HIP_PATH)/bin/hipcc
 CXX=$(HIPCC)
 LD=$(HIPCC)
 # CFLAGS  = -O3 -Wall -g -DSAVE_JPG  
-CPPFLAGS=-std=c++17 -O2 -Wall -DSAVE_JPG  -fopenmp --offload-arch=gfx908
+CPPFLAGS=-std=c++17 -O3 -Wall -DSAVE_JPG  -fopenmp --offload-arch=gfx908
 LDFLAGS	= -lm -ljpeg
 
 EXE = fractals

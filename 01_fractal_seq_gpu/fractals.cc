@@ -19,7 +19,7 @@ typedef struct _RGB
 	unsigned char b;
 }RGB;
 
-void save_jpeg_image(const char* filename, int* r, int* g, int* b, int image_width, int image_height)
+void save_jpeg_image(const char* filename, unsigned char * r, unsigned char* g, unsigned char* b, int image_width, int image_height)
 {
 	struct jpeg_compress_struct cinfo;
 	struct jpeg_error_mgr jerr;

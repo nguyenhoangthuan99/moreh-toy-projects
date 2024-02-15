@@ -14,16 +14,18 @@
       exit(EXIT_FAILURE);                                                                                  \
     }                                                                                                      \
   } while (0)
+
 #define COUNT_MAX 5000
-#define BLOCK_SIZE 16
-#define TILE_SIZE 1
+#define BLOCK_SIZE 8
+#define TILE_SIZE_X 1
+#define TILE_SIZE_Y 1
 #define MIN(x, y) ((x) < (y) ? (x) : (y))
 
 #ifdef SAVE_JPG
-void save_jpeg_image(const char *filename, int *r, int *g, int *b, int image_width, int image_height);
+void save_jpeg_image(const char *filename, unsigned char *r, unsigned char *g, unsigned char *b, int image_width, int image_height);
 #endif
 
-__global__ void gpu_mandelbrot(int *r, int *g, int *b, int m, int n)
+__global__ void gpu_mandelbrot(unsigned char *r, unsigned char *g, unsigned char *b, int m, int n)
 {
   int c;
   int count_max = COUNT_MAX;
@@ -34,21 +36,23 @@ __global__ void gpu_mandelbrot(int *r, int *g, int *b, int m, int n)
   float x, x1, x2;
   float y_max = 1.75;
   float y_min = -1.75;
+  int saved[TILE_SIZE_X][TILE_SIZE_Y];
 
   float y, y1, y2;
 
-  i = blockIdx.x * blockDim.x + threadIdx.x;
-  j = blockIdx.y * blockDim.y + threadIdx.y;
+  j = blockIdx.x * blockDim.x + threadIdx.x;
+  i = blockIdx.y * blockDim.y + threadIdx.y;
   // if (i >= m || j >= n)
   //   return;
-  for (int tile_j = 0; tile_j < TILE_SIZE; tile_j++)
-    for (int tile_i = 0; tile_i < TILE_SIZE; tile_i++)
-    {
-      if (TILE_SIZE * i + tile_i >= m || TILE_SIZE * j + tile_j >= n)
-        continue;
-      x = ((float)(TILE_SIZE * j + tile_j - 1) * x_max + (float)(m - TILE_SIZE * j - tile_j) * x_min) / (float)(m - 1);
+  for (int tile_i = 0; tile_i < TILE_SIZE_X; tile_i++)
+    for (int tile_j = 0; tile_j < TILE_SIZE_Y; tile_j++)
 
-      y = ((float)(TILE_SIZE * i + tile_i - 1) * y_max + (float)(n - TILE_SIZE * i - tile_i) * y_min) / (float)(n - 1);
+    {
+      if (TILE_SIZE_X * i + tile_i >= m || TILE_SIZE_Y * j + tile_j >= n)
+        continue;
+      x = ((float)(TILE_SIZE_Y * j + tile_j - 1) * x_max + (float)(m - TILE_SIZE_Y * j - tile_j) * x_min) / (float)(m - 1);
+
+      y = ((float)(TILE_SIZE_X * i + tile_i - 1) * y_max + (float)(n - TILE_SIZE_X * i - tile_i) * y_min) / (float)(n - 1);
 
       int count = 0;
 
@@ -68,7 +72,21 @@ __global__ void gpu_mandelbrot(int *r, int *g, int *b, int m, int n)
         x1 = x2;
         y1 = y2;
       }
-      int indx = (TILE_SIZE * i + tile_i) * n + TILE_SIZE * j + tile_j;
+      saved[tile_i][tile_j] = count;
+    }
+
+  for (int tile_i = 0; tile_i < TILE_SIZE_X; tile_i++)
+
+    for (int tile_j = 0; tile_j < TILE_SIZE_Y; tile_j++)
+
+    {
+      if (TILE_SIZE_X * i + tile_i >= m || TILE_SIZE_Y * j + tile_j >= n)
+        continue;
+      int count = saved[tile_i][tile_j];
+      // x = blockIdx.y * blockDim.y + threadIdx.x; // transpose block offset
+      // y = blockIdx.x * blockDim.x + threadIdx.y;
+      // int indx = (TILE_SIZE_Y * y + tile_j) * n + TILE_SIZE_X * x + tile_i;
+      int indx = (TILE_SIZE_X * i + tile_i) * n + TILE_SIZE_Y * j + tile_j;
 
       if ((count % 2) == 1)
       {
@@ -78,7 +96,7 @@ __global__ void gpu_mandelbrot(int *r, int *g, int *b, int m, int n)
       }
       else
       {
-        c = (int)(255.0 * sqrtf(sqrtf(sqrtf(
+        c = (unsigned char)(255.0 * sqrtf(sqrtf(sqrtf(
                               ((float)(count) / (float)(count_max))))));
         r[indx] = 3 * c / 5;
         g[indx] = 3 * c / 5;
@@ -87,26 +105,25 @@ __global__ void gpu_mandelbrot(int *r, int *g, int *b, int m, int n)
     }
 }
 
-void run_with_1_gpu_mandelbrot(int *r, int *g, int *b, int m, int n)
+void run_with_1_gpu_mandelbrot(unsigned char *r, unsigned char *g, unsigned char *b, int m, int n)
 {
   double wtime;
-  int *r_gpu, *g_gpu, *b_gpu;
-  int i;
-  printf("Start hip Malloc\n");
-  CHECK_HIP(hipMalloc((void **)&r_gpu, m * n * sizeof(int)));
-  CHECK_HIP(hipMalloc((void **)&g_gpu, m * n * sizeof(int)));
-  CHECK_HIP(hipMalloc((void **)&b_gpu, m * n * sizeof(int)));
-  printf("Done hip Malloc\n");
-
-  hipStream_t streams[3];
-
-  for (i = 0; i < 3; i++)
-  {
-    CHECK_HIP(hipStreamCreate(&streams[i]));
-  }
+  // int *r_gpu, *g_gpu, *b_gpu;
+  // int i;
+  // printf("Start hip Malloc\n");
+  // CHECK_HIP(hipMalloc((void **)&r_gpu, m * n * sizeof(int)));
+  // CHECK_HIP(hipMalloc((void **)&g_gpu, m * n * sizeof(int)));
+  // CHECK_HIP(hipMalloc((void **)&b_gpu, m * n * sizeof(int)));
+  // printf("Done hip Malloc\n");
 
   timer_init();
   timer_start(0);
+  // hipStream_t streams[3];
+
+  // for (i = 0; i < 3; i++)
+  // {
+  //   CHECK_HIP(hipStreamCreate(&streams[i]));
+  // }
 
   // Carry out the iteration for each pixel, determining COUNT.
   // cpu_mandelbrot(r_cpu, g_cpu, b_cpu, m, n);
@@ -115,31 +132,31 @@ void run_with_1_gpu_mandelbrot(int *r, int *g, int *b, int m, int n)
   // int *b = b_cpu;
 
   dim3 blockdim(BLOCK_SIZE, BLOCK_SIZE);
-  dim3 griddim(((m + TILE_SIZE - 1) / TILE_SIZE + blockdim.x - 1) / blockdim.x, ((n + TILE_SIZE - 1) / TILE_SIZE + blockdim.y - 1) / blockdim.y);
+  dim3 griddim(((m + TILE_SIZE_X - 1) / TILE_SIZE_X + blockdim.x - 1) / blockdim.x, ((n + TILE_SIZE_Y - 1) / TILE_SIZE_Y + blockdim.y - 1) / blockdim.y);
 
-  gpu_mandelbrot<<<griddim, blockdim>>>(r_gpu, g_gpu, b_gpu, m, n);
+  gpu_mandelbrot<<<griddim, blockdim>>>(r, g, b, m, n);
   // CHECK_HIP(hipDeviceSynchronize());
 
-  CHECK_HIP(hipMemcpyAsync(r, r_gpu, m * n * sizeof(int), hipMemcpyDeviceToHost, streams[0]));
-  CHECK_HIP(hipMemcpyAsync(g, g_gpu, m * n * sizeof(int), hipMemcpyDeviceToHost, streams[1]));
-  CHECK_HIP(hipMemcpyAsync(b, b_gpu, m * n * sizeof(int), hipMemcpyDeviceToHost, streams[2]));
+  // CHECK_HIP(hipMemcpyAsync(r, r_gpu, m * n * sizeof(int), hipMemcpyDeviceToHost, streams[0]));
+  // CHECK_HIP(hipMemcpyAsync(g, g_gpu, m * n * sizeof(int), hipMemcpyDeviceToHost, streams[1]));
+  // CHECK_HIP(hipMemcpyAsync(b, b_gpu, m * n * sizeof(int), hipMemcpyDeviceToHost, streams[2]));
 
-  CHECK_HIP(hipStreamSynchronize(streams[0]));
-  CHECK_HIP(hipStreamSynchronize(streams[1]));
-  CHECK_HIP(hipStreamSynchronize(streams[2]));
+  // CHECK_HIP(hipStreamSynchronize(streams[0]));
+  // CHECK_HIP(hipStreamSynchronize(streams[1]));
+  // CHECK_HIP(hipStreamSynchronize(streams[2]));
   CHECK_HIP(hipDeviceSynchronize());
 
   timer_stop(0);
   wtime = timer_read(0);
   printf("\n");
   printf("  Time = %lf seconds.\n", wtime);
-  CHECK_HIP(hipFree(r_gpu));
-  CHECK_HIP(hipFree(g_gpu));
-  CHECK_HIP(hipFree(b_gpu));
+  // CHECK_HIP(hipFree(r_gpu));
+  // CHECK_HIP(hipFree(g_gpu));
+  // CHECK_HIP(hipFree(b_gpu));
 }
 
-void run_with_multi_gpu_mandelbrot(int *r, int *g, int *b, int m, int n){
-
+void run_with_multi_gpu_mandelbrot(int *r, int *g, int *b, int m, int n)
+{
 }
 
 void mandelbrot(int m, int n, char *output_filename)
@@ -156,14 +173,14 @@ void mandelbrot(int m, int n, char *output_filename)
   FILE *output_unit;
 #endif
   // double wtime;
-  int *r, *g, *b;
+  unsigned char *r, *g, *b;
 
   // int *r_cpu = (int *)calloc(m * n, sizeof(int));
   // int *g_cpu = (int *)calloc(m * n, sizeof(int));
   // int *b_cpu = (int *)calloc(m * n, sizeof(int));
-  CHECK_HIP(hipHostMalloc((void **)&r, m * n * sizeof(int)));
-  CHECK_HIP(hipHostMalloc((void **)&g, m * n * sizeof(int)));
-  CHECK_HIP(hipHostMalloc((void **)&b, m * n * sizeof(int)));
+  CHECK_HIP(hipHostMalloc((void **)&r, m * n * sizeof(char),hipMemAllocationTypePinned));
+  CHECK_HIP(hipHostMalloc((void **)&g, m * n * sizeof(char),hipMemAllocationTypePinned));
+  CHECK_HIP(hipHostMalloc((void **)&b, m * n * sizeof(char),hipMemAllocationTypePinned));
 
   printf("  Sequential C version\n");
   printf("\n");
