@@ -9,15 +9,15 @@ To solve it with HIP - to run in GPU architecture, we need to define include the
 ```
 #include <hip/hip_runtime.h>
 #include "timers.h"
-#define CHECK_HIP(cmd)                                                                            
-  do                                                                                                 
-  {                                                                                                  
-    hipError_t error = cmd;                                                                          
-    if (error != hipSuccess)                                                                         
-    {                                                                                                
+#define CHECK_HIP(cmd)                                                                        
+  do                                                                                             
+  {                                                                                              
+    hipError_t error = cmd;                                                                      
+    if (error != hipSuccess)                                                                     
+    {                                                                                            
       fprintf(stderr, "HIP Error: %s (%d): %s:%d\n", hipGetErrorString(error), error, __FILE__, __LINE__); 
-      exit(EXIT_FAILURE);                                                                            
-    }                                                                                                
+      exit(EXIT_FAILURE);                                                                        
+    }                                                                                            
   } while (0)
 #define TILE_SIZE 1
 #define BLOCK_SIZE 16
@@ -25,30 +25,18 @@ To solve it with HIP - to run in GPU architecture, we need to define include the
 
 Because each pixel in target only be accessed 1 time, so we shouldn't use share memory or tiling technique which is only reduce performance, but for experiment purpose, I still implement using tiling 2D with TILE_SIZE - (each thread will calculate a matrix TILE_SIZExTILE_SIZE in the target picture ).
 
-Next, we need to declare and alloc memory for Array in both GPU and CPU. The hipHostMalloc function will malloc the memory in the pinned memory so it help transfer data between GPU and CPU much faster.
+Next, I'll use the unified memory access of HIP, to allocation memory for `r`, `g` and `b` channel of output image. The unified memory provide a pointer that can be access from both CPU and GPU, and we don't need to transfer memory from GPU to CPU by `hipMemcpy` anymore. Another point, I also changed the type of `r` `g` `b` channels from `int` to `unsigned char`, because the value of each pixel is bounded from `0` to `255`, this point can save time when transfer data from GPU to CPU.
 
 ```
-int *r_gpu, *g_gpu, *b_gpu, *r, *g, *b;
-printf("Start hip Malloc\n");
-CHECK_HIP(hipMalloc((void **)&r_gpu, m * n * sizeof(int)));
-CHECK_HIP(hipMalloc((void **)&g_gpu, m * n * sizeof(int)));
-CHECK_HIP(hipMalloc((void **)&b_gpu, m * n * sizeof(int)));
-printf("Done hip Malloc\n");
+  unsigned char *r, *g, *b;
 
-CHECK_HIP(hipHostMalloc((void **)&r, m * n * sizeof(int)));
-CHECK_HIP(hipHostMalloc((void **)&g, m * n * sizeof(int)));
-CHECK_HIP(hipHostMalloc((void **)&b, m * n * sizeof(int)));
-
-hipStream_t streams[3];
-
-for (i = 0; i < 3; i++)
-{
-    CHECK_HIP(hipStreamCreate(&streams[i]));
-}
+  CHECK_HIP(hipHostMalloc((void **)&r, m * n * sizeof(char),hipMemAllocationTypePinned));
+  CHECK_HIP(hipHostMalloc((void **)&g, m * n * sizeof(char),hipMemAllocationTypePinned));
+  CHECK_HIP(hipHostMalloc((void **)&b, m * n * sizeof(char),hipMemAllocationTypePinned));
 
 ```
 
-I also create 3 streams to transfer 3 array r_gpu, g_gpu, b_gpu to main memory parallely and reduce total time transfer compare to using the default stream.
+When using `hipHostMalloc`, I also provided the flag `hipMemAllocationTypePinned` to make the memory allocated in the `pinned memory` which will help transfer data faster.
 
 Next, I will call kernel to execute
 
@@ -56,27 +44,16 @@ Next, I will call kernel to execute
 dim3 blockdim(BLOCK_SIZE, BLOCK_SIZE);
 dim3 griddim(((m + TILE_SIZE - 1) / TILE_SIZE + blockdim.x - 1) / blockdim.x, ((n + TILE_SIZE - 1) / TILE_SIZE + blockdim.y - 1) / blockdim.y);
 
-gpu_mandelbrot<<<griddim, blockdim>>>(r_gpu, g_gpu, b_gpu, m, n);
+gpu_mandelbrot<<<griddim, blockdim>>>(r, g, b, m, n);
+
+CHECK_HIP(hipDeviceSynchronize());
 ```
 
-After finish calculating I transfer result to cpu.
 
-```
-  CHECK_HIP(hipMemcpyAsync(r, r_gpu, m * n * sizeof(int), hipMemcpyDeviceToHost, streams[0]));
-  CHECK_HIP(hipMemcpyAsync(g, g_gpu, m * n * sizeof(int), hipMemcpyDeviceToHost, streams[1]));
-  CHECK_HIP(hipMemcpyAsync(b, b_gpu, m * n * sizeof(int), hipMemcpyDeviceToHost, streams[2]));
 
-  CHECK_HIP(hipStreamSynchronize(streams[0]));
-  CHECK_HIP(hipStreamSynchronize(streams[1]));
-  CHECK_HIP(hipStreamSynchronize(streams[2]));
-  CHECK_HIP(hipDeviceSynchronize());
-```
+After finish calling kernel, we need to call DeviceSynchronize to wait all task done before exit time measuring.
 
-All the stream[0] - [1] - [2], only executed after the default stream is finished.
-
-After done transfer data we need to call StreamSynchronize or DeviceSynchronize to wait all task done before exit time measuring.
-
-The make file is built as follow
+The Make is built as follow
 
 ```
 HIP_PATH?= $(wildcard /opt/rocm)
@@ -117,7 +94,6 @@ This is the experiment result for Mandelbrot for size 8192 and 16384
 
 ![1707359765354](image/report/1707359765354.png)
 
-
 ![1707360077616](image/report/1707360077616.png)
 
 #### Julia
@@ -127,6 +103,5 @@ This is the experiment result for Julia for size 8192 and 16384
 ![1707359815422](image/report/1707359815422.png)
 
 ![1707359823133](image/report/1707359823133.png)
-
 
 ![1707360091281](image/report/1707360091281.png)
