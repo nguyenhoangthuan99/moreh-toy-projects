@@ -9,15 +9,15 @@ To solve it with HIP - to run in GPU architecture, we need to define include the
 ```
 #include <hip/hip_runtime.h>
 #include "timers.h"
-#define CHECK_HIP(cmd)                                                                        
-  do                                                                                             
-  {                                                                                              
-    hipError_t error = cmd;                                                                      
-    if (error != hipSuccess)                                                                     
-    {                                                                                            
+#define CHECK_HIP(cmd)                                                                    
+  do                                                                                         
+  {                                                                                          
+    hipError_t error = cmd;                                                                  
+    if (error != hipSuccess)                                                                 
+    {                                                                                        
       fprintf(stderr, "HIP Error: %s (%d): %s:%d\n", hipGetErrorString(error), error, __FILE__, __LINE__); 
-      exit(EXIT_FAILURE);                                                                        
-    }                                                                                            
+      exit(EXIT_FAILURE);                                                                    
+    }                                                                                        
   } while (0)
 #define TILE_SIZE 1
 #define BLOCK_SIZE 16
@@ -48,8 +48,6 @@ gpu_mandelbrot<<<griddim, blockdim>>>(r, g, b, m, n);
 
 CHECK_HIP(hipDeviceSynchronize());
 ```
-
-
 
 After finish calling kernel, we need to call DeviceSynchronize to wait all task done before exit time measuring.
 
@@ -90,9 +88,9 @@ The implementation flow for mandelbrot and julia are the same.
 
 This is the experiment result for Mandelbrot for size 8192 and 16384
 
-![1707359742184](image/report/1707359742184.png)
+![1708060322755](image/report/1708060322755.png)
 
-![1707359765354](image/report/1707359765354.png)
+![1708060338612](image/report/1708060338612.png)
 
 ![1707360077616](image/report/1707360077616.png)
 
@@ -100,8 +98,8 @@ This is the experiment result for Mandelbrot for size 8192 and 16384
 
 This is the experiment result for Julia for size 8192 and 16384
 
-![1707359815422](image/report/1707359815422.png)
+![1708060362350](image/report/1708060362350.png)
 
-![1707359823133](image/report/1707359823133.png)
+![1708060373183](image/report/1708060373183.png)
 
 ![1707360091281](image/report/1707360091281.png)
