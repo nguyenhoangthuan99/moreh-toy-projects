@@ -287,7 +287,7 @@ void julia(int w, int h, char *output_filename)
 
   unsigned char *r, *g, *b;
 
-  CHECK_HIP(hipHostMalloc((void **)&r, w * h * sizeof(int),hipMemAllocationTypePinned));
+  CHECK_HIP(hipHostMalloc((void **)&r, w * h * sizeof(int),hipMemAllocationTypePinned)); //hipMemAllocationTypePinned
   CHECK_HIP(hipHostMalloc((void **)&g, w * h * sizeof(int),hipMemAllocationTypePinned));
   CHECK_HIP(hipHostMalloc((void **)&b, w * h * sizeof(int),hipMemAllocationTypePinned));
 
