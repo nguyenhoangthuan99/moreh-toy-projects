@@ -327,7 +327,7 @@ __global__ void sobel_kernel_native_unroll(Pixel *input_pixels, Pixel *output_pi
     p12 = input_pixels[x + width * (y + 1)];
     p22 = input_pixels[x + 1 + width * (y + 1)];
 
-    g00 = ((int)p00.r + (int)p00.g + (int)p00.b) / 3;
+    g00 = ((int)p00.r + (int)p00.g + (int)p00.b) / 3; 
     g10 = ((int)p10.r + (int)p10.g + (int)p10.b) / 3;
     g20 = ((int)p20.r + (int)p20.g + (int)p20.b) / 3;
 
@@ -343,48 +343,50 @@ __global__ void sobel_kernel_native_unroll(Pixel *input_pixels, Pixel *output_pi
     gy = g02 + 2 * g12 + g22 - g00 - 2 * g10 - g20;
 
     magnitude = static_cast<int>(sqrt(gx * gx + gy * gy));
-    magnitude = min(max(magnitude, 0), 255);
+    magnitude = static_cast<unsigned char>(min(max(magnitude, 0), 255));
+    // uchar3 mag = make_uchar3(magnitude,magnitude,magnitude);
     output_pixels[x + width * (y)] = {static_cast<unsigned char>(magnitude),
                                       static_cast<unsigned char>(magnitude),
                                       static_cast<unsigned char>(magnitude)};
+    // reinterpret_cast<uchar3>((void ) output_pixels[x + width * (y)]) = mag;
   }
 }
 
-__global__ void sobel_kernel_tiling(Pixel *input_pixels, Pixel *output_pixels, int width, int height)
-{
-  const int filterX[3][3] = {{-1, 0, 1}, {-2, 0, 2}, {-1, 0, 1}};
-  const int filterY[3][3] = {{-1, -2, -1}, {0, 0, 0}, {1, 2, 1}};
-  int gx, gy, gray, magnitude, grays[TILE_SIZE + 2][TILE_SIZE + 2];
-  int x = blockIdx.x * blockDim.x + threadIdx.x;
-  int y = blockIdx.y * blockDim.y + threadIdx.y;
-  Pixel p;
+// __global__ void sobel_kernel_tiling(Pixel *input_pixels, Pixel *output_pixels, int width, int height)
+// {
+//   const int filterX[3][3] = {{-1, 0, 1}, {-2, 0, 2}, {-1, 0, 1}};
+//   const int filterY[3][3] = {{-1, -2, -1}, {0, 0, 0}, {1, 2, 1}};
+//   int gx, gy, gray, magnitude, grays[TILE_SIZE + 2][TILE_SIZE + 2];
+//   int x = blockIdx.x * blockDim.x + threadIdx.x;
+//   int y = blockIdx.y * blockDim.y + threadIdx.y;
+//   Pixel p;
 
-  gx = 0;
-  gy = 0;
-  for (int tile_j = 0; tile_j < TILE_SIZE; tile_j++)
-    for (int tile_i = 0; tile_i < TILE_SIZE; tile_i++)
-    {
-      if (x * TILE_SIZE + tile_i > 0 && y * TILE_SIZE + tile_j > 0 && x * TILE_SIZE + tile_i < width - 1 && y * TILE_SIZE + tile_j < height - 1)
-      {
-        for (int i = -1; i <= 1; ++i)
-        {
-          for (int j = -1; j <= 1; ++j)
-          {
+//   gx = 0;
+//   gy = 0;
+//   for (int tile_j = 0; tile_j < TILE_SIZE; tile_j++)
+//     for (int tile_i = 0; tile_i < TILE_SIZE; tile_i++)
+//     {
+//       if (x * TILE_SIZE + tile_i > 0 && y * TILE_SIZE + tile_j > 0 && x * TILE_SIZE + tile_i < width - 1 && y * TILE_SIZE + tile_j < height - 1)
+//       {
+//         for (int i = -1; i <= 1; ++i)
+//         {
+//           for (int j = -1; j <= 1; ++j)
+//           {
 
-            p = input_pixels[x * TILE_SIZE + tile_i + j + width * (y * TILE_SIZE + tile_j + i)];
-            int gray = ((int)p.r + (int)p.g + (int)p.b) / 3;
-            gx += gray * filterX[i + 1][j + 1];
-            gy += gray * filterY[i + 1][j + 1];
-          }
-        }
-        magnitude = static_cast<int>(sqrt(gx * gx + gy * gy));
-        magnitude = min(max(magnitude, 0), 255);
-        output_pixels[x * TILE_SIZE + tile_i + width * (y * TILE_SIZE + tile_j)] = {static_cast<unsigned char>(magnitude),
-                                                                                    static_cast<unsigned char>(magnitude),
-                                                                                    static_cast<unsigned char>(magnitude)};
-      }
-    }
-}
+//             p = input_pixels[x * TILE_SIZE + tile_i + j + width * (y * TILE_SIZE + tile_j + i)];
+//             int gray = ((int)p.r + (int)p.g + (int)p.b) / 3;
+//             gx += gray * filterX[i + 1][j + 1];
+//             gy += gray * filterY[i + 1][j + 1];
+//           }
+//         }
+//         magnitude = static_cast<int>(sqrt(gx * gx + gy * gy));
+//         magnitude = min(max(magnitude, 0), 255);
+//         output_pixels[x * TILE_SIZE + tile_i + width * (y * TILE_SIZE + tile_j)] = {static_cast<unsigned char>(magnitude),
+//                                                                                     static_cast<unsigned char>(magnitude),
+//                                                                                     static_cast<unsigned char>(magnitude)};
+//       }
+//     }
+// }
 void applySobelFilter_hip(Image &input, Image &output, int width, int height)
 {
   // TODO:
@@ -409,14 +411,14 @@ void applySobelFilter_hip(Image &input, Image &output, int width, int height)
   // }
   for (int i = 0; i < ngpu; i++)
   {
-    hipSetDevice(i);
+    CHECK_HIP(hipSetDevice(i));
     dim3 blockdim(BLOCK_SIZE, BLOCK_SIZE);
     dim3 griddim((input.width + blockdim.x - 1) / blockdim.x, (hend[i] - hbegin[i] + blockdim.y - 1) / blockdim.y);
     sobel_kernel_native_unroll<<<griddim, blockdim>>>(&input.pixels[hbegin[i] * input.width], &output.pixels[hbegin[i] * input.width], width, hend[i] - hbegin[i]);
   }
   for (int i = 0; i < ngpu; i++)
   {
-    hipSetDevice(i);
+    CHECK_HIP(hipSetDevice(i));
     CHECK_HIP(hipDeviceSynchronize());
   }
 }
@@ -467,8 +469,8 @@ int main(int argc, char **argv)
   clock_gettime(CLOCK_MONOTONIC, &end);
   timespec_subtract(&spent, &end, &start);
   printf("CPU Time spent: %ld.%09ld\n", spent.tv_sec, spent.tv_nsec);
-  // hipStream_t stream;
-  // hipStreamCreate(&stream);
+//  applySobelFilter_hip(inputImage, outputImage_hip, inputImage.width, inputImage.height);
+
   clock_gettime(CLOCK_MONOTONIC, &start);
 
   // You may modify this code part
