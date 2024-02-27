@@ -1,11 +1,10 @@
-CC=hipcc
+CC=gcc
 CXX=hipcc
 INCLUDES=
-CFLAGS=-O3 -Wall
-LDFLAGS=-ljpeg -lm
-TARGET=edge
-OBJS=edge.o
-CPPFLAGS=-std=c++17 -O3 -Wall 
+CFLAGS=-O3 -Wall --offload-arch=gfx908 -mfma
+LDFLAGS=-lm -ljpeg
+TARGET=raytracer
+OBJS=raytracer.o
 
 all: $(TARGET)
 
@@ -14,9 +13,8 @@ $(TARGET): $(OBJS)
 
 .c.o:
 	$(CC) $(CFLAGS) -c $< -o $@
-
 .cc.o:
-	$(CXX) --offload-arch=gfx908 -c $< -o $@ $(CPPFLAGS)
+	$(CXX) $(CFLAGS) -c $< -o $@
 
 clean:
 	rm -rf $(TARGET) $(OBJS)
