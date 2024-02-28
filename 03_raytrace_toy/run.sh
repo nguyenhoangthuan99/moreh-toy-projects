@@ -1,4 +1,4 @@
 #/bin/bash
 
-make clean && make &&
-srun -p EM --gres=gpu:2 ./raytracer 2048 2048 1 test.jpg 
+make clean && srun -p EM make &&
+srun -p EM --gres=gpu:2 ./raytracer 1024 1024 0 test.jpg 
