@@ -476,10 +476,10 @@ __device__ Vec3fGPU trace_gpu(
   return surfaceColor + sphere->emissionColor;
 }
 
-__global__ void raytrace_kernel(Vec3fGPU *image, int width, int height, SphereGPU *spheres, int size_spheres, float invWidth, float invHeight, float angle, float aspectratio, int hoffset)
+__global__ void raytrace_kernel(Vec3fGPU *image, size_t width, size_t height, SphereGPU *spheres, int size_spheres, float invWidth, float invHeight, float angle, float aspectratio, int hoffset)
 {
-  int x = blockIdx.x * blockDim.x + threadIdx.x;
-  int y = blockIdx.y * blockDim.y + threadIdx.y + hoffset;
+  size_t x = blockIdx.x * blockDim.x + threadIdx.x;
+  size_t y = blockIdx.y * blockDim.y + threadIdx.y + hoffset;
   if (x >= width || y >= height)
     return;
   float temp_xx = ((x + 0.5) * invWidth);
@@ -505,7 +505,7 @@ Vec3fGPU *render_gpu(const std::vector<Sphere> &spheres, size_t width, size_t he
   CHECK_HIP(hipGetDeviceCount(&ngpu));
   printf("num GPUs: %d\n", ngpu);
   int hbegin[1024], hend[1024];
-  for (int i = 0; i <= ngpu; i++)
+  for (int i = 0; i < ngpu; i++)
   {
     hbegin[i] = std::max(0, (int)height / ngpu * i + std::min(i, (int)height % ngpu) - 1);
     // printf("%d %d %d\n",h / ngpu * i,std::min(i, h % ngpu),hbegin[i] );
@@ -527,7 +527,7 @@ Vec3fGPU *render_gpu(const std::vector<Sphere> &spheres, size_t width, size_t he
     CHECK_HIP(hipMemcpyAsync((void **)sphere_gpu[i], spheres.data(), spheres.size() * sizeof(Sphere), hipMemcpyHostToDevice));
   }
 
-  CHECK_HIP(hipHostMalloc((void **)&image, width * height * sizeof(Vec3fGPU), hipMemAllocationTypePinned));
+  CHECK_HIP(hipHostMalloc((void **)&image, width * height * sizeof(Vec3fGPU), hipHostMallocNonCoherent));
   float invWidth = 1 / float(width), invHeight = 1 / float(height);
   float fov = 30, aspectratio = width / float(height);
   float angle = tan(M_PI * 0.5 * fov / 180.);
@@ -538,13 +538,14 @@ Vec3fGPU *render_gpu(const std::vector<Sphere> &spheres, size_t width, size_t he
     dim3 blockdim(BLOCK_SIZE, BLOCK_SIZE);
     dim3 griddim((width + BLOCK_SIZE - 1) / BLOCK_SIZE, (hend[i] - hbegin[i] + BLOCK_SIZE - 1) / BLOCK_SIZE);
 
-    raytrace_kernel<<<griddim, blockdim>>>(image, (int)width, (int)height, sphere_gpu[i], (int)spheres.size(), invWidth, invHeight, angle, aspectratio, hbegin[i]);
+    raytrace_kernel<<<griddim, blockdim>>>(image, width, height, sphere_gpu[i], (int)spheres.size(), invWidth, invHeight, angle, aspectratio, hbegin[i]);
   }
   // Trace rays
   for (int i = 0; i < ngpu; i++)
   {
     CHECK_HIP(hipSetDevice(i));
     CHECK_HIP(hipDeviceSynchronize());
+    CHECK_HIP(hipFree(sphere_gpu[i]));
   }
 
   return image;
