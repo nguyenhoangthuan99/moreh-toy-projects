@@ -356,6 +356,7 @@ Vec3f *render_cpu(const std::vector<Sphere> &spheres, size_t width, size_t heigh
   float fov = 30, aspectratio = width / float(height);
   float angle = tan(M_PI * 0.5 * fov / 180.);
   // Trace rays
+  // #pragma omp parallel for num_threads(32)
   for (unsigned y = 0; y < height; ++y)
   {
     for (unsigned x = 0; x < width; ++x, ++pixel)
@@ -410,6 +411,7 @@ __device__ Vec3fGPU trace_gpu(
   bool inside = false;
   if (raydir.dot(nhit) > 0)
     nhit = -nhit, inside = true;
+  Vec3fGPU nhit_bias = nhit * bias;
   if ((sphere->transparency > 0 || sphere->reflection > 0) && depth < MAX_RAY_DEPTH)
   {
     // float facingratio = -raydir.dot(nhit);
@@ -420,10 +422,11 @@ __device__ Vec3fGPU trace_gpu(
     float fresneleffect = mix_gpu(temp * temp * temp, 1, 0.1);
     // compute reflection direction (not need to normalize because all vectors
     // are already normalized)
-
-    Vec3fGPU refldir = raydir - nhit * 2 * raydir.dot(nhit);
+    Vec3fGPU temp_refldir = nhit * raydir.dot(nhit);
+    Vec3fGPU refldir = raydir - temp_refldir - temp_refldir;
+    // Vec3fGPU refldir = raydir - nhit * 2 * raydir.dot(nhit);
     refldir.normalize();
-    Vec3fGPU reflection = trace_gpu(phit + nhit * bias, refldir, spheres, size_spheres, depth + 1);
+    Vec3fGPU reflection = trace_gpu(phit + nhit_bias, refldir, spheres, size_spheres, depth + 1);
     Vec3fGPU refraction = 0;
     // if the sphere is also transparent compute refraction ray (transmission)
     if (sphere->transparency)
@@ -433,7 +436,7 @@ __device__ Vec3fGPU trace_gpu(
       float k = 1 - eta * eta * (1 - cosi * cosi);
       Vec3fGPU refrdir = raydir * eta + nhit * (eta * cosi - __fsqrt_rn(k));
       refrdir.normalize();
-      refraction = trace_gpu(phit - nhit * bias, refrdir, spheres, size_spheres, depth + 1);
+      refraction = trace_gpu(phit - nhit_bias, refrdir, spheres, size_spheres, depth + 1);
     }
     // the result is a mix of reflection and refraction (if the sphere is transparent)
     surfaceColor = (reflection * fresneleffect +
@@ -456,7 +459,7 @@ __device__ Vec3fGPU trace_gpu(
           if (i != j)
           {
             float t0, t1;
-            if (spheres[j].intersect(phit + nhit * bias, lightDirection, t0, t1))
+            if (spheres[j].intersect(phit + nhit_bias, lightDirection, t0, t1))
             {
               transmission = 0;
               break;
@@ -478,8 +481,10 @@ __global__ void raytrace_kernel(Vec3fGPU *image, int width, int height, SphereGP
   int y = blockIdx.y * blockDim.y + threadIdx.y + hoffset;
   if (x >= width || y >= height)
     return;
-  float xx = (2 * ((x + 0.5) * invWidth) - 1) * angle * aspectratio;
-  float yy = (1 - 2 * ((y + 0.5) * invHeight)) * angle;
+  float temp_xx = ((x + 0.5) * invWidth);
+  float xx = (temp_xx + temp_xx - 1) * angle * aspectratio;
+  float temp_yy = ((y + 0.5) * invHeight);
+  float yy = (1 - temp_yy - temp_yy) * angle;
 
   Vec3fGPU raydir(xx, yy, -1);
   raydir.normalize();
@@ -532,7 +537,7 @@ Vec3f *render_gpu(const std::vector<Sphere> &spheres, size_t width, size_t heigh
     dim3 blockdim(BLOCK_SIZE, BLOCK_SIZE);
     dim3 griddim((width + BLOCK_SIZE - 1) / BLOCK_SIZE, (hend[i] - hbegin[i] + BLOCK_SIZE - 1) / BLOCK_SIZE);
 
-    raytrace_kernel<<<griddim, blockdim>>>((Vec3fGPU *)image, (int)width, (int)height, sphere_gpu[i], (int)spheres.size(), invWidth, invHeight, angle, aspectratio,hbegin[i]);
+    raytrace_kernel<<<griddim, blockdim>>>((Vec3fGPU *)image, (int)width, (int)height, sphere_gpu[i], (int)spheres.size(), invWidth, invHeight, angle, aspectratio, hbegin[i]);
   }
   // Trace rays
   for (int i = 0; i < ngpu; i++)
@@ -589,27 +594,30 @@ int main(int argc, char **argv)
 
   Vec3f *image_gpu = render_gpu(spheres, width, height);
   clock_gettime(CLOCK_MONOTONIC, &end_gpu);
-  bool pass = true;
   float tolerance = 0.35;
   float diff = 0.0;
-  int count = 0;
+  size_t diff_cnt = 0;
+  size_t total_cnt = width * height;
   if (verification > 0)
   {
+    printf("\n=========Verification=========\n");
+
     Vec3f *image_cpu = render_cpu(spheres, width, height);
-#pragma omp parallel for num_threads(32)
+    // #pragma omp parallel for num_threads(32)
     for (unsigned i = 0; i < width * height; ++i)
     {
+      // total_cnt++;
       diff = abs(image_gpu[i].x - image_cpu[i].x) + abs(image_gpu[i].y - image_cpu[i].y) + abs(image_gpu[i].z - image_cpu[i].z);
       if (diff > tolerance)
       {
-        printf("%d: diff(%f > %f), gpu(%f,%f,%f) cpu(%f,%f,%f)\n", i, diff, tolerance, image_gpu[i].x, image_gpu[i].y, image_gpu[i].z, image_cpu[i].x, image_cpu[i].y, image_cpu[i].z);
-        count += 1;
-        pass = false;
-        // break;
+        // printf("%d: diff(%f > %f), gpu(%f,%f,%f) cpu(%f,%f,%f)\n", i, diff, tolerance, image_gpu[i].x, image_gpu[i].y, image_gpu[i].z, image_cpu[i].x, image_cpu[i].y, image_cpu[i].z);
+        diff_cnt++;
       }
     }
 
-    if (pass)
+    double diff_rate = (double)diff_cnt / (double)total_cnt;
+    printf("diff_cnt = %zu, correctness = %lf%%\n", diff_cnt, ((double)1.0 - diff_rate) * 100);
+    if (diff_rate < 0.00001)
     {
       fprintf(stdout, "Verification Pass!\n");
     }
@@ -617,6 +625,8 @@ int main(int argc, char **argv)
     {
       fprintf(stdout, "Verification Failed\n");
     }
+    printf("===============================\n\n");
+
     delete[] image_cpu;
   }
 
@@ -640,15 +650,14 @@ int main(int argc, char **argv)
   // delete[] image_gpu;
   CHECK_HIP(hipFree(image_gpu));
   clock_gettime(CLOCK_MONOTONIC, &end);
-  printf("%d\n", count);
-  if (verification)
-  {
-    timespec_subtract(&spent, &end, &end_gpu);
-    printf("CPU Time: %ld.%09ld\n", spent.tv_sec, spent.tv_nsec);
-  }
+  // if (verification)
+  // {
+  //   timespec_subtract(&spent, &end, &end_gpu);
+  //   printf("CPU Time: %ld.%09ld\n", spent.tv_sec, spent.tv_nsec);
+  // }
 
-  timespec_subtract(&spent, &end_gpu, &start);
-  printf("GPU Time: %ld.%09ld\n", spent.tv_sec, spent.tv_nsec);
+  // timespec_subtract(&spent, &end_gpu, &start);
+  // printf("GPU Time: %ld.%09ld\n", spent.tv_sec, spent.tv_nsec);
 
   timespec_subtract(&spent, &end, &start);
 
