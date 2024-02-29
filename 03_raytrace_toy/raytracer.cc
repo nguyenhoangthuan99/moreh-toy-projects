@@ -30,7 +30,7 @@
 #ifndef INFINITY
 #define INFINITY 1e8
 #endif
-#define BLOCK_SIZE 8
+#define BLOCK_SIZE 16
 #define TILE_SIZE 8
 #define CHECK_HIP(cmd)                                                                                     \
   do                                                                                                       \
@@ -412,6 +412,7 @@ __device__ Vec3fGPU trace_gpu(
   if (raydir.dot(nhit) > 0)
     nhit = -nhit, inside = true;
   Vec3fGPU nhit_bias = nhit * bias;
+  Vec3fGPU phit_nhit_bias = phit + nhit_bias;
   if ((sphere->transparency > 0 || sphere->reflection > 0) && depth < MAX_RAY_DEPTH)
   {
     // float facingratio = -raydir.dot(nhit);
@@ -426,7 +427,7 @@ __device__ Vec3fGPU trace_gpu(
     Vec3fGPU refldir = raydir - temp_refldir - temp_refldir;
     // Vec3fGPU refldir = raydir - nhit * 2 * raydir.dot(nhit);
     refldir.normalize();
-    Vec3fGPU reflection = trace_gpu(phit + nhit_bias, refldir, spheres, size_spheres, depth + 1);
+    Vec3fGPU reflection = trace_gpu(phit_nhit_bias, refldir, spheres, size_spheres, depth + 1);
     Vec3fGPU refraction = 0;
     // if the sphere is also transparent compute refraction ray (transmission)
     if (sphere->transparency)
@@ -459,7 +460,7 @@ __device__ Vec3fGPU trace_gpu(
           if (i != j)
           {
             float t0, t1;
-            if (spheres[j].intersect(phit + nhit_bias, lightDirection, t0, t1))
+            if (spheres[j].intersect(phit_nhit_bias, lightDirection, t0, t1))
             {
               transmission = 0;
               break;
@@ -495,10 +496,10 @@ __global__ void raytrace_kernel(Vec3fGPU *image, int width, int height, SphereGP
 void mallocSphere()
 {
 }
-Vec3f *render_gpu(const std::vector<Sphere> &spheres, size_t width, size_t height)
+Vec3fGPU *render_gpu(const std::vector<Sphere> &spheres, size_t width, size_t height)
 {
   // TODO:
-  Vec3f *image;
+  Vec3fGPU *image;
   SphereGPU *sphere_gpu[1024];
   int ngpu;
   CHECK_HIP(hipGetDeviceCount(&ngpu));
@@ -521,12 +522,12 @@ Vec3f *render_gpu(const std::vector<Sphere> &spheres, size_t width, size_t heigh
   for (int i = 0; i < ngpu; i++)
   {
     CHECK_HIP(hipSetDevice(i));
-    CHECK_HIP(hipMalloc(&sphere_gpu[i], spheres.size() * sizeof(SphereGPU)));
+    CHECK_HIP(hipMallocAsync(&sphere_gpu[i], spheres.size() * sizeof(SphereGPU),hipStreamDefault));
 
     CHECK_HIP(hipMemcpyAsync((void **)sphere_gpu[i], spheres.data(), spheres.size() * sizeof(Sphere), hipMemcpyHostToDevice));
   }
 
-  CHECK_HIP(hipHostMalloc((void **)&image, width * height * sizeof(Vec3f), hipMemAllocationTypePinned));
+  CHECK_HIP(hipHostMalloc((void **)&image, width * height * sizeof(Vec3fGPU), hipMemAllocationTypePinned));
   float invWidth = 1 / float(width), invHeight = 1 / float(height);
   float fov = 30, aspectratio = width / float(height);
   float angle = tan(M_PI * 0.5 * fov / 180.);
@@ -537,7 +538,7 @@ Vec3f *render_gpu(const std::vector<Sphere> &spheres, size_t width, size_t heigh
     dim3 blockdim(BLOCK_SIZE, BLOCK_SIZE);
     dim3 griddim((width + BLOCK_SIZE - 1) / BLOCK_SIZE, (hend[i] - hbegin[i] + BLOCK_SIZE - 1) / BLOCK_SIZE);
 
-    raytrace_kernel<<<griddim, blockdim>>>((Vec3fGPU *)image, (int)width, (int)height, sphere_gpu[i], (int)spheres.size(), invWidth, invHeight, angle, aspectratio, hbegin[i]);
+    raytrace_kernel<<<griddim, blockdim>>>(image, (int)width, (int)height, sphere_gpu[i], (int)spheres.size(), invWidth, invHeight, angle, aspectratio, hbegin[i]);
   }
   // Trace rays
   for (int i = 0; i < ngpu; i++)
@@ -549,7 +550,7 @@ Vec3f *render_gpu(const std::vector<Sphere> &spheres, size_t width, size_t heigh
   return image;
 }
 
-void save_jpeg_image(const char *filename, Vec3f *image, int image_width, int image_height);
+void save_jpeg_image(const char *filename, Vec3fGPU *image, int image_width, int image_height);
 // In the main function, we will create the scene which is composed of 5 spheres
 // and 1 light (which is also a sphere). Then, once the scene description is complete
 // we render that scene, by calling the render() function.
@@ -592,7 +593,7 @@ int main(int argc, char **argv)
   // light
   spheres.push_back(Sphere(Vec3f(0.0, 20, -30), 3, Vec3f(0.00, 0.00, 0.00), 0, 0.0, Vec3f(3)));
 
-  Vec3f *image_gpu = render_gpu(spheres, width, height);
+  Vec3fGPU *image_gpu = render_gpu(spheres, width, height);
   clock_gettime(CLOCK_MONOTONIC, &end_gpu);
   float tolerance = 0.35;
   float diff = 0.0;
@@ -650,14 +651,14 @@ int main(int argc, char **argv)
   // delete[] image_gpu;
   CHECK_HIP(hipFree(image_gpu));
   clock_gettime(CLOCK_MONOTONIC, &end);
-  // if (verification)
-  // {
-  //   timespec_subtract(&spent, &end, &end_gpu);
-  //   printf("CPU Time: %ld.%09ld\n", spent.tv_sec, spent.tv_nsec);
-  // }
+  if (verification)
+  {
+    timespec_subtract(&spent, &end, &end_gpu);
+    printf("CPU Time: %ld.%09ld\n", spent.tv_sec, spent.tv_nsec);
+  }
 
-  // timespec_subtract(&spent, &end_gpu, &start);
-  // printf("GPU Time: %ld.%09ld\n", spent.tv_sec, spent.tv_nsec);
+  timespec_subtract(&spent, &end_gpu, &start);
+  printf("GPU Time: %ld.%09ld\n", spent.tv_sec, spent.tv_nsec);
 
   timespec_subtract(&spent, &end, &start);
 
@@ -672,7 +673,7 @@ typedef struct _RGB
   unsigned char b;
 } RGB;
 
-void save_jpeg_image(const char *filename, Vec3f *image, int image_width, int image_height)
+void save_jpeg_image(const char *filename, Vec3fGPU *image, int image_width, int image_height)
 {
   struct jpeg_compress_struct cinfo;
   struct jpeg_error_mgr jerr;
