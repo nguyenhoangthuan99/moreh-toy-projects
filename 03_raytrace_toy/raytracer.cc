@@ -30,7 +30,8 @@
 #ifndef INFINITY
 #define INFINITY 1e8
 #endif
-#define BLOCK_SIZE 16
+#define BLOCK_SIZE_X 64
+#define BLOCK_SIZE_Y 4
 #define TILE_SIZE 8
 #define CHECK_HIP(cmd)                                                                                     \
   do                                                                                                       \
@@ -496,14 +497,13 @@ __global__ void raytrace_kernel(Vec3fGPU *image, size_t width, size_t height, Sp
 void mallocSphere()
 {
 }
-Vec3fGPU *render_gpu(const std::vector<Sphere> &spheres, size_t width, size_t height)
+void render_gpu(Vec3fGPU *image, const std::vector<Sphere> &spheres, size_t width, size_t height)
 {
   // TODO:
-  Vec3fGPU *image;
   SphereGPU *sphere_gpu[2];
   int ngpu;
   CHECK_HIP(hipGetDeviceCount(&ngpu));
-  printf("num GPUs: %d\n", ngpu);
+  // printf("num GPUs: %d\n", ngpu);
   int hbegin[2], hend[2];
   for (int i = 0; i < ngpu; i++)
   {
@@ -513,21 +513,17 @@ Vec3fGPU *render_gpu(const std::vector<Sphere> &spheres, size_t width, size_t he
     if (i == ngpu - 1)
       hend[i] = (int)height;
   }
-  // Sphere *sphere_cpu;
-  // sphere_cpu = (Sphere *)malloc(spheres.size() * sizeof(Sphere));
-  // for (int i = 0; i < spheres.size(); i++)
-  // {
-  //   sphere_cpu[i] = spheres[i];
-  // }
+
   for (int i = 0; i < ngpu; i++)
   {
     CHECK_HIP(hipSetDevice(i));
-    CHECK_HIP(hipMallocAsync(&sphere_gpu[i], spheres.size() * sizeof(SphereGPU),hipStreamDefault));
+    CHECK_HIP(hipMallocAsync(&sphere_gpu[i], spheres.size() * sizeof(SphereGPU), hipStreamDefault));
 
     CHECK_HIP(hipMemcpyAsync((void **)sphere_gpu[i], spheres.data(), spheres.size() * sizeof(Sphere), hipMemcpyHostToDevice));
   }
-
-  CHECK_HIP(hipHostMalloc((void **)&image, width * height * sizeof(Vec3fGPU), hipMemAllocationTypePinned));
+  // CHECK_HIP(hipHostMalloc(&sphere_gpu, spheres.size() * sizeof(SphereGPU), hipMemAllocationTypePinned));
+  // CHECK_HIP(hipMemcpyAsync((void **)sphere_gpu, spheres.data(), spheres.size() * sizeof(Sphere), hipMemcpyHostToHost));
+  // CHECK_HIP(hipHostMalloc((void **)&image, width * height * sizeof(Vec3fGPU), hipMemAllocationTypePinned));
   float invWidth = 1 / float(width), invHeight = 1 / float(height);
   float fov = 30, aspectratio = width / float(height);
   float angle = tan(M_PI * 0.5 * fov / 180.);
@@ -535,8 +531,8 @@ Vec3fGPU *render_gpu(const std::vector<Sphere> &spheres, size_t width, size_t he
   for (int i = 0; i < ngpu; i++)
   {
     CHECK_HIP(hipSetDevice(i));
-    dim3 blockdim(BLOCK_SIZE, BLOCK_SIZE);
-    dim3 griddim((width + BLOCK_SIZE - 1) / BLOCK_SIZE, (hend[i] - hbegin[i] + BLOCK_SIZE - 1) / BLOCK_SIZE);
+    dim3 blockdim(BLOCK_SIZE_X, BLOCK_SIZE_Y);
+    dim3 griddim((width + BLOCK_SIZE_X - 1) / BLOCK_SIZE_X, (hend[i] - hbegin[i] + BLOCK_SIZE_Y - 1) / BLOCK_SIZE_Y);
 
     raytrace_kernel<<<griddim, blockdim>>>(image, width, height, sphere_gpu[i], (int)spheres.size(), invWidth, invHeight, angle, aspectratio, hbegin[i]);
   }
@@ -548,7 +544,7 @@ Vec3fGPU *render_gpu(const std::vector<Sphere> &spheres, size_t width, size_t he
     CHECK_HIP(hipFree(sphere_gpu[i]));
   }
 
-  return image;
+  // return image;
 }
 
 void save_jpeg_image(const char *filename, Vec3fGPU *image, int image_width, int image_height);
@@ -562,7 +558,7 @@ int main(int argc, char **argv)
   char *filename = NULL;
   int verification = 0;
 
-  struct timespec start, end, spent, end_gpu;
+  struct timespec start, end, spent;
   clock_gettime(CLOCK_MONOTONIC, &start);
 
   if (argc < 3 || argc > 5)
@@ -594,8 +590,10 @@ int main(int argc, char **argv)
   // light
   spheres.push_back(Sphere(Vec3f(0.0, 20, -30), 3, Vec3f(0.00, 0.00, 0.00), 0, 0.0, Vec3f(3)));
 
-  Vec3fGPU *image_gpu = render_gpu(spheres, width, height);
-  clock_gettime(CLOCK_MONOTONIC, &end_gpu);
+  Vec3fGPU *image_gpu;
+  CHECK_HIP(hipHostMalloc((void **)&image_gpu, width * height * sizeof(Vec3fGPU), hipMemAllocationTypePinned));
+  render_gpu(image_gpu, spheres, width, height);
+  // clock_gettime(CLOCK_MONOTONIC, &end_gpu);
   float tolerance = 0.35;
   float diff = 0.0;
   size_t diff_cnt = 0;
@@ -652,14 +650,14 @@ int main(int argc, char **argv)
   // delete[] image_gpu;
   CHECK_HIP(hipFree(image_gpu));
   clock_gettime(CLOCK_MONOTONIC, &end);
-  if (verification)
-  {
-    timespec_subtract(&spent, &end, &end_gpu);
-    printf("CPU Time: %ld.%09ld\n", spent.tv_sec, spent.tv_nsec);
-  }
+  // if (verification)
+  // {
+  //   timespec_subtract(&spent, &end, &end_gpu);
+  //   printf("CPU Time: %ld.%09ld\n", spent.tv_sec, spent.tv_nsec);
+  // }
 
-  timespec_subtract(&spent, &end_gpu, &start);
-  printf("GPU Time: %ld.%09ld\n", spent.tv_sec, spent.tv_nsec);
+  // timespec_subtract(&spent, &end_gpu, &start);
+  // printf("GPU Time: %ld.%09ld\n", spent.tv_sec, spent.tv_nsec);
 
   timespec_subtract(&spent, &end, &start);
 
