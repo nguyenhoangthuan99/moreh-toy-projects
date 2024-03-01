@@ -163,7 +163,8 @@ public:
     if (nor2 > 0)
     {
       // T invNor = 1 / __fsqrt_rn(nor2);
-      x = __fdiv_rn(x, nor2), y = __fdiv_rn(y, nor2), z = __fdiv_rn(z, nor2);
+      // x = __fdiv_rn(x, nor2), y = __fdiv_rn(y, nor2), z = __fdiv_rn(z, nor2);
+      x = x/ nor2, y = y/ nor2, z = z/ nor2;
     }
     return *this;
   }
@@ -240,7 +241,7 @@ float mix(const float &a, const float &b, const float &mix)
 
 __device__ float mix_gpu(const float &a, const float &b, const float &mix)
 {
-  return __fadd_rn(__fmul_rn(b, mix), __fmul_rn(a, __fsub_rn(1, mix)));
+  return  b * mix + a * (1 - mix);//__fadd_rn(__fmul_rn(b, mix), __fmul_rn(a, __fsub_rn(1, mix)));
 }
 // This is the main trace function. It takes a ray as argument (defined by its origin
 // and direction). We test if this ray intersects any of the geometry in the scene.
