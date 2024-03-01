@@ -500,11 +500,11 @@ Vec3fGPU *render_gpu(const std::vector<Sphere> &spheres, size_t width, size_t he
 {
   // TODO:
   Vec3fGPU *image;
-  SphereGPU *sphere_gpu[1024];
+  SphereGPU *sphere_gpu[2];
   int ngpu;
   CHECK_HIP(hipGetDeviceCount(&ngpu));
   printf("num GPUs: %d\n", ngpu);
-  int hbegin[1024], hend[1024];
+  int hbegin[2], hend[2];
   for (int i = 0; i < ngpu; i++)
   {
     hbegin[i] = std::max(0, (int)height / ngpu * i + std::min(i, (int)height % ngpu) - 1);
@@ -527,7 +527,7 @@ Vec3fGPU *render_gpu(const std::vector<Sphere> &spheres, size_t width, size_t he
     CHECK_HIP(hipMemcpyAsync((void **)sphere_gpu[i], spheres.data(), spheres.size() * sizeof(Sphere), hipMemcpyHostToDevice));
   }
 
-  CHECK_HIP(hipHostMalloc((void **)&image, width * height * sizeof(Vec3fGPU), hipHostMallocNonCoherent));
+  CHECK_HIP(hipHostMalloc((void **)&image, width * height * sizeof(Vec3fGPU), hipMemAllocationTypePinned));
   float invWidth = 1 / float(width), invHeight = 1 / float(height);
   float fov = 30, aspectratio = width / float(height);
   float angle = tan(M_PI * 0.5 * fov / 180.);
