@@ -32,7 +32,7 @@
 #endif
 #define BLOCK_SIZE_X 64
 #define BLOCK_SIZE_Y 4
-#define TILE_SIZE 8
+#define BUFFER_SIZE 32
 #define CHECK_HIP(cmd)                                                                                     \
   do                                                                                                       \
   {                                                                                                        \
@@ -164,7 +164,7 @@ public:
     {
       // T invNor = 1 / __fsqrt_rn(nor2);
       // x = __fdiv_rn(x, nor2), y = __fdiv_rn(y, nor2), z = __fdiv_rn(z, nor2);
-      x = x/ nor2, y = y/ nor2, z = z/ nor2;
+      x = x / nor2, y = y / nor2, z = z / nor2;
     }
     return *this;
   }
@@ -241,7 +241,7 @@ float mix(const float &a, const float &b, const float &mix)
 
 __device__ float mix_gpu(const float &a, const float &b, const float &mix)
 {
-  return  b * mix + a * (1 - mix);//__fadd_rn(__fmul_rn(b, mix), __fmul_rn(a, __fsub_rn(1, mix)));
+  return b * mix + a * (1 - mix); //__fadd_rn(__fmul_rn(b, mix), __fmul_rn(a, __fsub_rn(1, mix)));
 }
 // This is the main trace function. It takes a ray as argument (defined by its origin
 // and direction). We test if this ray intersects any of the geometry in the scene.
@@ -478,12 +478,13 @@ __device__ Vec3fGPU trace_gpu(
   return surfaceColor + sphere->emissionColor;
 }
 
-__global__ void raytrace_kernel(Vec3fGPU *image, size_t width, size_t height, SphereGPU *spheres, int size_spheres, float invWidth, float invHeight, float angle, float aspectratio, int hoffset)
+__global__ void raytrace_kernel(Vec3fGPU *image, size_t width, size_t height, SphereGPU *spheres, int size_spheres, float invWidth, float invHeight, float angle, float aspectratio, int hoffset, int h_work_size)
 {
   size_t x = blockIdx.x * blockDim.x + threadIdx.x;
-  size_t y = blockIdx.y * blockDim.y + threadIdx.y + hoffset;
-  if (x >= width || y >= height)
+  size_t y = blockIdx.y * blockDim.y + threadIdx.y;
+  if (x >= width || y >= h_work_size)
     return;
+  y += hoffset;
   float temp_xx = ((x + 0.5) * invWidth);
   float xx = (temp_xx + temp_xx - 1) * angle * aspectratio;
   float temp_yy = ((y + 0.5) * invHeight);
@@ -492,22 +493,25 @@ __global__ void raytrace_kernel(Vec3fGPU *image, size_t width, size_t height, Sp
   Vec3fGPU raydir(xx, yy, -1);
   raydir.normalize();
 
-  image[y * width + x] = trace_gpu(Vec3fGPU(0), raydir, spheres, size_spheres, 0);
+  image[(y - hoffset) * width + x] = trace_gpu(Vec3fGPU(0), raydir, spheres, size_spheres, 0);
   // printf("%d %d\n",x,y);
 }
 void mallocSphere()
 {
 }
-void render_gpu(Vec3fGPU *image, const std::vector<Sphere> &spheres, size_t width, size_t height)
+Vec3fGPU *render_gpu(const std::vector<Sphere> &spheres, size_t width, size_t height)
 {
   // TODO:
   SphereGPU *sphere_gpu[2];
+  Vec3fGPU *image;
+  // hipStream_t streams[2];
   int ngpu;
   CHECK_HIP(hipGetDeviceCount(&ngpu));
   // printf("num GPUs: %d\n", ngpu);
   int hbegin[2], hend[2];
   for (int i = 0; i < ngpu; i++)
   {
+
     hbegin[i] = std::max(0, (int)height / ngpu * i + std::min(i, (int)height % ngpu) - 1);
     // printf("%d %d %d\n",h / ngpu * i,std::min(i, h % ngpu),hbegin[i] );
     hend[i] = (int)height / ngpu * (i + 1) + std::min(i + 1, (int)height % ngpu) + 1;
@@ -524,7 +528,8 @@ void render_gpu(Vec3fGPU *image, const std::vector<Sphere> &spheres, size_t widt
   }
   // CHECK_HIP(hipHostMalloc(&sphere_gpu, spheres.size() * sizeof(SphereGPU), hipMemAllocationTypePinned));
   // CHECK_HIP(hipMemcpyAsync((void **)sphere_gpu, spheres.data(), spheres.size() * sizeof(Sphere), hipMemcpyHostToHost));
-  // CHECK_HIP(hipHostMalloc((void **)&image, width * height * sizeof(Vec3fGPU), hipMemAllocationTypePinned));
+
+  CHECK_HIP(hipHostMalloc((void **)&image, width * height * sizeof(Vec3fGPU), hipMemAllocationTypePinned));
   float invWidth = 1 / float(width), invHeight = 1 / float(height);
   float fov = 30, aspectratio = width / float(height);
   float angle = tan(M_PI * 0.5 * fov / 180.);
@@ -535,7 +540,7 @@ void render_gpu(Vec3fGPU *image, const std::vector<Sphere> &spheres, size_t widt
     dim3 blockdim(BLOCK_SIZE_X, BLOCK_SIZE_Y);
     dim3 griddim((width + BLOCK_SIZE_X - 1) / BLOCK_SIZE_X, (hend[i] - hbegin[i] + BLOCK_SIZE_Y - 1) / BLOCK_SIZE_Y);
 
-    raytrace_kernel<<<griddim, blockdim>>>(image, width, height, sphere_gpu[i], (int)spheres.size(), invWidth, invHeight, angle, aspectratio, hbegin[i]);
+    raytrace_kernel<<<griddim, blockdim>>>(image, width, height, sphere_gpu[i], (int)spheres.size(), invWidth, invHeight, angle, aspectratio, hbegin[i], hend[i] - hbegin[i]);
   }
   // Trace rays
   for (int i = 0; i < ngpu; i++)
@@ -545,14 +550,67 @@ void render_gpu(Vec3fGPU *image, const std::vector<Sphere> &spheres, size_t widt
     CHECK_HIP(hipFree(sphere_gpu[i]));
   }
 
-  // return image;
+  return image;
 }
+void render_gpu_v2(Vec3fGPU *image[BUFFER_SIZE], const std::vector<Sphere> &spheres, size_t width, size_t height)
+{
+  // TODO:
+  SphereGPU *sphere_gpu[2];
 
+  // hipStream_t streams[BUFFER_SIZE];
+  int ngpu;
+  CHECK_HIP(hipGetDeviceCount(&ngpu));
+  // printf("num GPUs: %d\n", ngpu);
+  int hbegin[BUFFER_SIZE], hend[BUFFER_SIZE];
+  for (int i = 0; i < BUFFER_SIZE; i++)
+  {
+
+    hbegin[i] = std::max(0, (int)height / BUFFER_SIZE * i + std::min(i, (int)height % BUFFER_SIZE) - 1);
+    // printf("%d %d %d\n",h / ngpu * i,std::min(i, h % ngpu),hbegin[i] );
+    hend[i] = (int)height / BUFFER_SIZE * (i + 1) + std::min(i + 1, (int)height % BUFFER_SIZE) + 1;
+    if (i == BUFFER_SIZE - 1)
+      hend[i] = (int)height;
+  }
+
+  for (int i = 0; i < ngpu; i++)
+  {
+    CHECK_HIP(hipSetDevice(i));
+    CHECK_HIP(hipMallocAsync(&sphere_gpu[i], spheres.size() * sizeof(SphereGPU), hipStreamDefault));
+
+    CHECK_HIP(hipMemcpyAsync((void **)sphere_gpu[i], spheres.data(), spheres.size() * sizeof(Sphere), hipMemcpyHostToDevice));
+  }
+  // CHECK_HIP(hipHostMalloc(&sphere_gpu, spheres.size() * sizeof(SphereGPU), hipMemAllocationTypePinned));
+  // CHECK_HIP(hipMemcpyAsync((void **)sphere_gpu, spheres.data(), spheres.size() * sizeof(Sphere), hipMemcpyHostToHost));
+  float invWidth = 1 / float(width), invHeight = 1 / float(height);
+  float fov = 30, aspectratio = width / float(height);
+  float angle = tan(M_PI * 0.5 * fov / 180.);
+
+  for (int i = 0; i < BUFFER_SIZE; i++)
+  {
+    CHECK_HIP(hipHostMalloc((void **)&image[i], width * (hend[i] - hbegin[i]) * sizeof(Vec3fGPU), hipMemAllocationTypePinned));
+    CHECK_HIP(hipSetDevice(i % ngpu));
+    // CHECK_HIP(hipStreamCreate(&streams[i]));
+    dim3 blockdim(BLOCK_SIZE_X, BLOCK_SIZE_Y);
+    dim3 griddim((width + BLOCK_SIZE_X - 1) / BLOCK_SIZE_X, (hend[i] - hbegin[i] + BLOCK_SIZE_Y - 1) / BLOCK_SIZE_Y);
+
+    raytrace_kernel<<<griddim, blockdim, 0>>>(image[i], width, height, sphere_gpu[i % ngpu], (int)spheres.size(), invWidth, invHeight, angle, aspectratio, hbegin[i], hend[i] - hbegin[i]);
+  }
+  // Trace rays
+  for (int i = 0; i < ngpu; i++)
+  {
+    CHECK_HIP(hipSetDevice(i));
+    CHECK_HIP(hipDeviceSynchronize());
+    CHECK_HIP(hipFree(sphere_gpu[i]));
+  }
+}
 void save_jpeg_image(const char *filename, Vec3fGPU *image, int image_width, int image_height);
-// In the main function, we will create the scene which is composed of 5 spheres
-// and 1 light (which is also a sphere). Then, once the scene description is complete
-// we render that scene, by calling the render() function.
-int main(int argc, char **argv)
+
+void save_jpeg_image_v2(const char *filename, Vec3fGPU *image[], int image_width,
+                        int image_height);
+    // In the main function, we will create the scene which is composed of 5 spheres
+    // and 1 light (which is also a sphere). Then, once the scene description is complete
+    // we render that scene, by calling the render() function.
+    int main(int argc, char **argv)
 {
   size_t width;
   size_t height;
@@ -580,6 +638,7 @@ int main(int argc, char **argv)
       filename = argv[4];
     }
   }
+  printf("image size width x height: %d x %d\n",width,height);
 
   std::vector<Sphere> spheres;
   // position, radius, surface color, reflectivity, transparency, emission color
@@ -591,9 +650,18 @@ int main(int argc, char **argv)
   // light
   spheres.push_back(Sphere(Vec3f(0.0, 20, -30), 3, Vec3f(0.00, 0.00, 0.00), 0, 0.0, Vec3f(3)));
 
-  Vec3fGPU *image_gpu;
-  CHECK_HIP(hipHostMalloc((void **)&image_gpu, width * height * sizeof(Vec3fGPU), hipMemAllocationTypePinned));
-  render_gpu(image_gpu, spheres, width, height);
+  // Vec3fGPU *image_gpu = render_gpu(spheres, width, height);
+  Vec3fGPU *image_gpu[BUFFER_SIZE];
+  render_gpu_v2(image_gpu, spheres, width, height);
+  // CHECK_HIP(hipHostMalloc((void **)&image_gpu, width * height * sizeof(Vec3fGPU), hipMemAllocationTypePinned));
+  int hbegin[BUFFER_SIZE], hend[BUFFER_SIZE];
+  for (int i = 0; i < BUFFER_SIZE; i++)
+  {
+    hbegin[i] = std::max(0, (int)height / BUFFER_SIZE * i + std::min(i, (int)height % BUFFER_SIZE) - 1);
+    hend[i] = (int)height / BUFFER_SIZE * (i + 1) + std::min(i + 1, (int)height % BUFFER_SIZE) + 1;
+    if (i == BUFFER_SIZE - 1)
+      hend[i] = (int)height;
+  }
   // clock_gettime(CLOCK_MONOTONIC, &end_gpu);
   float tolerance = 0.35;
   float diff = 0.0;
@@ -602,13 +670,25 @@ int main(int argc, char **argv)
   if (verification > 0)
   {
     printf("\n=========Verification=========\n");
+    Vec3f *image_gpu_for_eval;
+    CHECK_HIP(hipHostMalloc(&image_gpu_for_eval, sizeof(Vec3f) * width * height, hipMemAllocationTypePinned));
+    for (int b = 0; b < BUFFER_SIZE; ++b)
+    {
+      int begin = hbegin[b];
+      int end = hend[b];
+      if (begin == end)
+        continue;
+      CHECK_HIP(hipMemcpy(image_gpu_for_eval + begin * width, image_gpu[b],
+                          sizeof(Vec3f) * width * (end - begin),
+                          hipMemcpyHostToHost));
+    }
 
     Vec3f *image_cpu = render_cpu(spheres, width, height);
     // #pragma omp parallel for num_threads(32)
     for (unsigned i = 0; i < width * height; ++i)
     {
       // total_cnt++;
-      diff = abs(image_gpu[i].x - image_cpu[i].x) + abs(image_gpu[i].y - image_cpu[i].y) + abs(image_gpu[i].z - image_cpu[i].z);
+      diff = abs(image_gpu_for_eval[i].x - image_cpu[i].x) + abs(image_gpu_for_eval[i].y - image_cpu[i].y) + abs(image_gpu_for_eval[i].z - image_cpu[i].z);
       if (diff > tolerance)
       {
         // printf("%d: diff(%f > %f), gpu(%f,%f,%f) cpu(%f,%f,%f)\n", i, diff, tolerance, image_gpu[i].x, image_gpu[i].y, image_gpu[i].z, image_cpu[i].x, image_cpu[i].y, image_cpu[i].z);
@@ -644,12 +724,13 @@ int main(int argc, char **argv)
     }
     ofs.close();
 #else
-    save_jpeg_image(filename, image_gpu, width, height);
+    save_jpeg_image_v2(filename, image_gpu, width, height);
 #endif
   }
   //   exit(0);
   // delete[] image_gpu;
-  CHECK_HIP(hipFree(image_gpu));
+  for (int i = 0; i < BUFFER_SIZE; i++)
+    CHECK_HIP(hipFree(image_gpu[i]));
   clock_gettime(CLOCK_MONOTONIC, &end);
   // if (verification)
   // {
@@ -685,6 +766,78 @@ void save_jpeg_image(const char *filename, Vec3fGPU *image, int image_width, int
     rgb[i].r = (unsigned char)(std::min((float)1, image[i].x) * 255);
     rgb[i].g = (unsigned char)(std::min((float)1, image[i].y) * 255);
     rgb[i].b = (unsigned char)(std::min((float)1, image[i].z) * 255);
+  }
+
+  int i;
+  FILE *fp;
+
+  cinfo.err = jpeg_std_error(&jerr);
+
+  fp = fopen(filename, "wb");
+  if (fp == NULL)
+  {
+    printf("Cannot open file to save jpeg image: %s\n", filename);
+    exit(0);
+  }
+
+  jpeg_create_compress(&cinfo);
+
+  jpeg_stdio_dest(&cinfo, fp);
+
+  cinfo.image_width = image_width;
+  cinfo.image_height = image_height;
+  cinfo.input_components = 3;
+  cinfo.in_color_space = JCS_RGB;
+
+  jpeg_set_defaults(&cinfo);
+
+  jpeg_start_compress(&cinfo, TRUE);
+
+  for (i = 0; i < image_height; i++)
+  {
+    row_pointer = (JSAMPROW)&rgb[i * image_width];
+    jpeg_write_scanlines(&cinfo, &row_pointer, 1);
+  }
+
+  jpeg_finish_compress(&cinfo);
+  fclose(fp);
+
+  free(rgb);
+}
+
+void save_jpeg_image_v2(const char *filename, Vec3fGPU *image[], int image_width,
+                        int image_height)
+{
+  struct jpeg_compress_struct cinfo;
+  struct jpeg_error_mgr jerr;
+  JSAMPROW row_pointer;
+
+  RGB *rgb = (RGB *)malloc(sizeof(RGB) * image_width * image_height);
+
+  int hbegin[BUFFER_SIZE], hend[BUFFER_SIZE];
+  for (int i = 0; i < BUFFER_SIZE; i++)
+  {
+    hbegin[i] = std::max(0, (int)image_height / BUFFER_SIZE * i + std::min(i, (int)image_height % BUFFER_SIZE) - 1);
+    hend[i] = (int)image_height / BUFFER_SIZE * (i + 1) + std::min(i + 1, (int)image_height % BUFFER_SIZE) + 1;
+    if (i == BUFFER_SIZE - 1)
+      hend[i] = (int)image_height;
+  }
+
+  for (int b = 0; b < BUFFER_SIZE; ++b)
+  {
+    int begin = hbegin[b];
+    int end = hend[b];
+    for (int x = begin; x < end; ++x)
+    {
+      for (int y = 0; y < image_width; ++y)
+      {
+        int gi = (x - begin) * image_width + y;
+        int i = x * image_width + y;
+        rgb[i].r = (unsigned char)(std::min((float)1, image[b][gi].x) * 255);
+        rgb[i].g = (unsigned char)(std::min((float)1, image[b][gi].y) * 255);
+        rgb[i].b = (unsigned char)(std::min((float)1, image[b][gi].z) * 255);
+      }
+    }
   }
 
   int i;

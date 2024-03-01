@@ -8,8 +8,8 @@
 
 using namespace std;
 #define BLOCK_SIZE 64
-#define TILE_SIZE 1
-#define BATCH 4
+#define TILE_SIZE 2
+#define BATCH 1
 #define CHECK_HIP(cmd)                                                                                           \
     do                                                                                                           \
     {                                                                                                            \
@@ -78,6 +78,7 @@ __global__ void matmul_kernel_shared(float *xout, float4 *x, float4 *w, int n, i
     int i = blockIdx.x * blockDim.x + threadIdx.x;
 
     float sum = 0.0f;
+    float sum1 = 0.0f;
     int j = 0;
     for (; j < n - BLOCK_SIZE + 1; j += BLOCK_SIZE)
     {
@@ -85,6 +86,7 @@ __global__ void matmul_kernel_shared(float *xout, float4 *x, float4 *w, int n, i
         __syncthreads();
         for (int k = 0; i < d && k < BLOCK_SIZE; k++)
         {
+            // float4 x_shared = 
             sum += w[i * n + j + k].x * x_shared[k].x;
             sum += w[i * n + j + k].y * x_shared[k].y;
             sum += w[i * n + j + k].z * x_shared[k].z;
@@ -108,7 +110,7 @@ __global__ void matmul_kernel_shared(float *xout, float4 *x, float4 *w, int n, i
 
 __global__ void matmul_kernel_shared_batch(float *xout, float4 *x, float4 *w, int n, int d)
 {
-    __shared__ float4 x_shared[BATCH][BLOCK_SIZE + 1];
+    __shared__ float4 x_shared[BATCH][BLOCK_SIZE ];
     int i = blockIdx.x * blockDim.x + threadIdx.x;
 
     float sum[BATCH] = {0.0f};
@@ -172,7 +174,7 @@ void matmul(float *x_cpu, float *xout, float *x, float *w, int n, int d)
 
     dim3 blockDim(BLOCK_SIZE);
     dim3 gridDim((d + blockDim.x - 1) / blockDim.x);
-    matmul_kernel_shared_batch<<<gridDim, blockDim>>>(xout, (float4 *)x, (float4 *)w, (n + 3) / 4, d);
+    matmul_kernel_shared<<<gridDim, blockDim>>>(xout, (float4 *)x, (float4 *)w, (n + 3) / 4, d);
     CHECK_HIP(hipDeviceSynchronize());
 }
 void rand_mat(float *m, int R)
@@ -226,7 +228,7 @@ int main(int argc, char **argv)
     // printf("Gflop: %lf\n", 2.0 * n * d / (end - start) / 1e9);
     double start_ = get_time();
 
-    matmul_kernel_shared_batch<<<gridDim_, blockDim_>>>(x_out_gpu, (float4 *)x_gpu, (float4 *)w_gpu, (n + 3) / 4, d);
+    matmul_kernel_shared<<<gridDim_, blockDim_>>>(x_out_gpu, (float4 *)x_gpu, (float4 *)w_gpu, (n + 3) / 4, d);
 
     CHECK_HIP(hipDeviceSynchronize());
     double end_ = get_time();
