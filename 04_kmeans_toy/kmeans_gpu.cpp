@@ -462,8 +462,10 @@ void run_2_gpu(int iteration_n, int class_n, int data_n, Point *centroids, Point
 void kmeans(int iteration_n, int class_n, int data_n, Point *centroids, Point *data, int *partitioned)
 {
   // printf("Max memory space: %lf GB %d\n", MAX_DATA_N * MAX_CLASS_N * sizeof(Point) / 1e9, sizeof(Point));
+  int ngpu;
+  CHECK_HIP(hipGetDeviceCount(&ngpu));
 
-  bool use_2_gpu = true;
+  bool use_2_gpu = ngpu > 1;
   if (use_2_gpu)
   {
     int canAccessPeer;
