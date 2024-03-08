@@ -7,9 +7,10 @@
 #include <hip/hip_runtime.h>
 
 using namespace std;
-#define BLOCK_SIZE 64
-#define TILE_SIZE 2
-#define BATCH 1
+#define BLOCK_SIZE 16
+#define TILE_SIZE 1
+#define BATCH 2
+#define WARP_SIZE 64
 #define CHECK_HIP(cmd)                                                                                           \
     do                                                                                                           \
     {                                                                                                            \
@@ -55,38 +56,79 @@ double get_time()
 //     }
 //     xout[idx] = sum;
 // }
+__device__ float warpReduceSum(float val)
+{
+    for (int offset = WARP_SIZE / 2; offset > 0; offset >>= 1)
+        val += __shfl_xor(val, offset);
+    return val;
+}
+
+__device__ float blockReduceSum(float val)
+{
+    static __shared__ float shared[WARP_SIZE];
+    int lane = threadIdx.x % WARP_SIZE;
+    int wid = threadIdx.x / WARP_SIZE;
+    val = warpReduceSum(val);
+    if (lane == 0)
+        shared[wid] = val;
+
+    __syncthreads();
+    val = (threadIdx.x < blockDim.x / WARP_SIZE) ? shared[lane] : 0;
+
+    if (wid == 0)
+        val = warpReduceSum(val);
+}
 __global__ void matmul_kernel_native(float *xout, float *x, float *w, int n, int d)
 {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
 
-    for (int tile = 0; tile < TILE_SIZE; tile++)
+    float sum = 0;
+
+#pragma unroll 23
+    for (int i = 0; i < n; i++)
     {
-        float sum = 0;
-        if (idx * TILE_SIZE + tile < d)
+        sum += w[idx * n + i] * x[i];
+    }
+    xout[idx] = sum;
+}
+
+__global__ void matmul_kernel_native_batch(float *xout, float *x, float *w, int n, int d)
+{
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+
+    float sum[BATCH] = {0};
+
+#pragma unroll 23
+    for (int i = 0; i < n; i++)
+    {
+// #pragma unroll BATCH
+        for (int b = 0; b < BATCH; b++)
         {
-            for (int i = 0; i < n; i++)
-            {
-                sum += w[(idx * TILE_SIZE + tile) * n + i] * x[i];
-            }
-            xout[idx * TILE_SIZE + tile] = sum;
+            sum[b] += w[idx * n + i] * x[b * n + i];
         }
     }
+// #pragma unroll BATCH
+    for (int b = 0; b < BATCH; b++)
+        xout[b * d + idx] = sum[b];
 }
-__global__ void matmul_kernel_shared(float *xout, float4 *x, float4 *w, int n, int d)
+__global__ void matmul_kernel_shared_f4(float *xout, float4 *x, float4 *w, int n, int d)
 {
     __shared__ float4 x_shared[BLOCK_SIZE + 1];
+    // __shared__ float4 w_shared[BLOCK_SIZE + 1];
     int i = blockIdx.x * blockDim.x + threadIdx.x;
 
     float sum = 0.0f;
     float sum1 = 0.0f;
     int j = 0;
-    for (; j < n - BLOCK_SIZE + 1; j += BLOCK_SIZE)
+    for (; j < n; j += BLOCK_SIZE)
     {
         x_shared[threadIdx.x] = x[j + threadIdx.x];
+
         __syncthreads();
+
         for (int k = 0; i < d && k < BLOCK_SIZE; k++)
         {
-            // float4 x_shared = 
+            // float4 x_shared =
             sum += w[i * n + j + k].x * x_shared[k].x;
             sum += w[i * n + j + k].y * x_shared[k].y;
             sum += w[i * n + j + k].z * x_shared[k].z;
@@ -95,62 +137,84 @@ __global__ void matmul_kernel_shared(float *xout, float4 *x, float4 *w, int n, i
         __syncthreads();
     }
 
-    for (; j < n; j++)
-    {
-        sum += w[i * n + j].x * x[j].x;
-        sum += w[i * n + j].y * x[j].y;
-        sum += w[i * n + j].z * x[j].z;
-        sum += w[i * n + j].w * x[j].w;
-    }
     if (i >= d)
         return;
-
+    // if (threadIdx.y == 0)
     xout[i] = sum;
+}
+__global__ void matmul_kernel_shared(float *xout, float *x, float *w, int n, int d)
+{
+    __shared__ float x_shared[BLOCK_SIZE + 1];
+    // __shared__ float w_shared[BLOCK_SIZE + 1];
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+
+    float sum = 0.0f;
+    float sum1 = 0.0f;
+    int j = 0;
+    for (; j < n; j += BLOCK_SIZE)
+    {
+        x_shared[threadIdx.x] = x[j + threadIdx.x];
+
+        __syncthreads();
+
+        for (int k = 0; i < d && k < BLOCK_SIZE; k++)
+        {
+            // float4 x_shared =
+            sum += w[i * n + j + k] * x_shared[k];
+        }
+
+        __syncthreads();
+    }
+
+    if (i >= d)
+        return;
+    if (threadIdx.y == 0)
+        xout[i] = sum;
 }
 
 __global__ void matmul_kernel_shared_batch(float *xout, float4 *x, float4 *w, int n, int d)
 {
-    __shared__ float4 x_shared[BATCH][BLOCK_SIZE ];
+    __shared__ float4 x_shared[BATCH][BLOCK_SIZE];
     int i = blockIdx.x * blockDim.x + threadIdx.x;
 
     float sum[BATCH] = {0.0f};
     int j = 0;
-    for (; j < n - BLOCK_SIZE + 1; j += BLOCK_SIZE)
+    for (; j < n; j += BLOCK_SIZE)
     {
-#pragma unroll BATCH
+
         for (int b = 0; b < BATCH; b++)
-            x_shared[b][threadIdx.x] = x[b*n + j + threadIdx.x];
+            x_shared[b][threadIdx.x] = x[b * n + j + threadIdx.x];
         __syncthreads();
         for (int k = 0; i < d && k < BLOCK_SIZE; k++)
         {
-            float4 w4 = w[i * n + j + k];
-#pragma unroll BATCH
+            // float4 w4 = w[i * n + j + k];
+
             for (int b = 0; b < BATCH; b++)
             {
-                sum[b] += w4.x * x_shared[b][k].x;
-                sum[b] += w4.y * x_shared[b][k].y;
-                sum[b] += w4.z * x_shared[b][k].z;
-                sum[b] += w4.w * x_shared[b][k].w;
+                sum[b] += w[i * n + j + k].x * x_shared[b][k].x;
+                sum[b] += w[i * n + j + k].y * x_shared[b][k].y;
+                sum[b] += w[i * n + j + k].z * x_shared[b][k].z;
+                sum[b] += w[i * n + j + k].w * x_shared[b][k].w;
             }
         }
         __syncthreads();
     }
 
-    for (; j < n; j++)
-    {
-        float4 w4 = w[i * n + j];
-#pragma unroll BATCH
-        for (int b = 0; b < BATCH; b++)
-        {
-            sum[b] += w4.x * x[b * n + j].x;
-            sum[b] += w4.y * x[b * n + j].y;
-            sum[b] += w4.z * x[b * n + j].z;
-            sum[b] += w4.w * x[b * n + j].w;
-        }
-    }
+    //     for (; j < n; j++)
+    //     {
+    //         float4 w4 = w[i * n + j];
+    // #pragma unroll BATCH
+    //         for (int b = 0; b < BATCH; b++)
+    //         {
+    //             sum[b] += w4.x * x[b * n + j].x;
+    //             sum[b] += w4.y * x[b * n + j].y;
+    //             sum[b] += w4.z * x[b * n + j].z;
+    //             sum[b] += w4.w * x[b * n + j].w;
+    //         }
+    //     }
     if (i >= d)
         return;
-#pragma unroll BATCH
+    // #pragma unroll BATCH
     for (int b = 0; b < BATCH; b++)
         xout[b * d + i] = sum[b];
 }
@@ -172,9 +236,9 @@ void matmul(float *x_cpu, float *xout, float *x, float *w, int n, int d)
             x_cpu[b * d + i] = val;
         }
 
-    dim3 blockDim(BLOCK_SIZE);
+    dim3 blockDim(BLOCK_SIZE, TILE_SIZE);
     dim3 gridDim((d + blockDim.x - 1) / blockDim.x);
-    matmul_kernel_shared<<<gridDim, blockDim>>>(xout, (float4 *)x, (float4 *)w, (n + 3) / 4, d);
+    matmul_kernel_native<<<gridDim, blockDim>>>(xout, x, w, n, d);
     CHECK_HIP(hipDeviceSynchronize());
 }
 void rand_mat(float *m, int R)
@@ -197,10 +261,19 @@ int main(int argc, char **argv)
     CHECK_HIP(hipMalloc((void **)&x_gpu, BATCH * n * sizeof(float)));
     CHECK_HIP(hipMalloc((void **)&w_gpu, d * n * sizeof(float)));
     CHECK_HIP(hipMalloc((void **)&x_out_gpu, BATCH * d * sizeof(float)));
+    CHECK_HIP(hipDeviceSynchronize());
 
     // rand_mat(xout,d);
     rand_mat(x, n * BATCH);
     rand_mat(w, d * n);
+
+    //     for (int i =0;i<n;i++)
+    //         printf("x[%d]: %f\n",i,x[i]);
+    //  for (int j =0;j<d;j++)
+    //     for (int i =0;i<n;i++)
+
+    //         printf("w[%d][%d]: %f\n",j,i,w[j*n+i]);
+
     CHECK_HIP(hipMemcpy(x_gpu, x, n * sizeof(float), hipMemcpyHostToDevice));
     CHECK_HIP(hipMemcpy(w_gpu, w, n * d * sizeof(float), hipMemcpyHostToDevice));
     matmul(x_cpu, xout, x, w, n, d);
@@ -220,7 +293,7 @@ int main(int argc, char **argv)
     // double end = get_time();
     // printf("Gflop: %lf\n", 2.0 * n * d / (end - start) / 1e9);
     // start = get_time();
-    dim3 blockDim_(BLOCK_SIZE);
+    dim3 blockDim_(BLOCK_SIZE, TILE_SIZE);
     dim3 gridDim_(BATCH * (d + blockDim_.x - 1) / blockDim_.x);
     // matmul_kernel_shared<<<gridDim_, blockDim_>>>(xout, (float4 *)x, (float4 *)w, (n+3)/4, d);
     // CHECK_HIP(hipDeviceSynchronize());
@@ -228,11 +301,30 @@ int main(int argc, char **argv)
     // printf("Gflop: %lf\n", 2.0 * n * d / (end - start) / 1e9);
     double start_ = get_time();
 
-    matmul_kernel_shared<<<gridDim_, blockDim_>>>(x_out_gpu, (float4 *)x_gpu, (float4 *)w_gpu, (n + 3) / 4, d);
+    matmul_kernel_native<<<gridDim_, blockDim_>>>(x_out_gpu, x_gpu, w_gpu, n, d);
 
     CHECK_HIP(hipDeviceSynchronize());
     double end_ = get_time();
     printf("total time cost %lf\n", end_ - start_);
-    printf("Gflop: %lf\n", 2.0 * n * d * BATCH / (end_ - start_) / 1e9);
+    printf("Gflop: %lf\n", 2.0 * n * d  / (end_ - start_) / 1e9);
+
+    // start_ = get_time();
+
+    // matmul_kernel_shared_f4<<<gridDim_, blockDim_>>>(x_out_gpu, (float4 *)x_gpu, (float4 *)w_gpu, n / 4, d);
+
+    // CHECK_HIP(hipDeviceSynchronize());
+    // end_ = get_time();
+    // printf("total time cost %lf\n", end_ - start_);
+    // printf("Gflop: %lf\n", 2.0 * n * d  / (end_ - start_) / 1e9);
+
+    // double start_ = get_time();
+
+    // matmul_kernel_native_batch<<<gridDim_, blockDim_>>>(x_out_gpu,x_gpu, w_gpu, n , d);
+
+    // CHECK_HIP(hipDeviceSynchronize());
+    // double end_ = get_time();
+    // printf("total time cost %lf\n", end_ - start_);
+    // printf("Gflop: %lf\n", 2.0 * n * d * BATCH / (end_ - start_) / 1e9);
+
     return 0;
 }

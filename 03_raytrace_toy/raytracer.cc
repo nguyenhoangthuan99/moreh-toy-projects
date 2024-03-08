@@ -32,7 +32,7 @@
 #endif
 #define BLOCK_SIZE_X 64
 #define BLOCK_SIZE_Y 4
-#define BUFFER_SIZE 32
+#define BUFFER_SIZE 64
 #define CHECK_HIP(cmd)                                                                                     \
   do                                                                                                       \
   {                                                                                                        \

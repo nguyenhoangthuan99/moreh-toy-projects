@@ -1,2 +1,0 @@
-"Name","Calls","TotalDurationNs","AverageNs","Percentage"
-"raytrace_kernel(Vec3GPU<float>*, unsigned long, unsigned long, SphereGPU*, int, float, float, float, float, int)",2,3333716914,1666858457,100.0
