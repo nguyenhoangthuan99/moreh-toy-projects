@@ -9,7 +9,7 @@
 using namespace std;
 #define BLOCK_SIZE 8
 #define TILE_SIZE 1
-#define BATCH 2
+#define BATCH 8
 #define WARP_SIZE 64
 #define CHECK_HIP(cmd)                                                                                           \
     do                                                                                                           \
